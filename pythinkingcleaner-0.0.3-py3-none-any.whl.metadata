@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: pythinkingcleaner
+Version: 0.0.3
+Summary: Library to control ThinkingCleaner devices
+Home-page: https://github.com/TheRealLink/pythinkingcleaner
+Download-URL: https://github.com/TheRealLink/pythinkingcleaner/archive/0.0.3.tar.gz
+Author: Dennis Karpienski
+Author-email: dennis@karpienski.de
+License: MIT
+Keywords: thinkingcleaner,roomba
+Requires-Dist: requests
+
