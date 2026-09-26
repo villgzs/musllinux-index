@@ -1,0 +1,77 @@
+name: Clean all contents (no history)
+
+on:
+  workflow_dispatch:          # csak kézzel indítható
+
+permissions:
+  contents: write             # force push-hoz kell
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0      # teljes history (az orphan-hoz nem kötelező, de biztonságos)
+
+      - name: Delete all .whl files
+        run: |
+          echo "=== .whl fájlok törlése ==="
+          find . -type f -name "*.whl" -print -delete
+          echo "Maradék .whl fájlok száma: $(find . -name '*.whl' | wc -l)"
+
+          echo "=== .html fájlok törlése ==="
+          find . -type f -name "*.html" -print -delete
+          echo "Maradék .html fájlok száma: $(find . -name '*.html' | wc -l)"
+
+          echo "=== .metadata fájlok törlése ==="
+          find . -type f -name "*.metadata" -print -delete
+          echo "Maradék .metadata fájlok száma: $(find . -name '*.metadata' | wc -l)"
+
+          echo "=== .json fájlok törlése ==="
+          find . -type f -name "*.json" -print -delete
+          echo "Maradék .json fájlok száma: $(find . -name '*.json' | wc -l)"
+
+      - name: Create basic index.html
+        run: |
+          cat > index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>musllinux-index</title>
+          </head>
+          <body>
+          </body>
+          </html>
+          EOF
+          echo "index.html létrehozva"          
+
+      - name: Create orphan commit and force-push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Új, történet nélküli ág
+          git checkout --orphan temp-clean
+
+          # Minden aktuális fájlt hozzáadunk (a .whl-ek már nincsenek)
+          git add -A
+
+          # Ha van mit commitolni
+          if git diff --staged --quiet; then
+            echo "Nincs változás (már üres volt a repo)."
+            # Üres commitot is létrehozunk, hogy tiszta legyen a history
+            git commit --allow-empty -m "Clean: remove all wheels (no history)"
+          else
+            git commit -m "Clean: remove all wheels (no history)"
+          fi
+
+          # Régi main törlése + átnevezés
+          git branch -D main || true
+          git branch -m main
+
+          # Force push – a teljes előzmény eltűnik
+          git push -f origin main
