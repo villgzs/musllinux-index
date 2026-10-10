@@ -1,0 +1,367 @@
+Metadata-Version: 2.5
+Name: aiopowerwall
+Version: 0.4.1
+Summary: Async Tesla Powerwall 3 client over the TEDAPI v1r RSA-signed LAN protocol.
+Project-URL: Homepage, https://github.com/Teslemetry/aiopowerwall
+Project-URL: Repository, https://github.com/Teslemetry/aiopowerwall
+Project-URL: Issues, https://github.com/Teslemetry/aiopowerwall/issues
+Project-URL: Changelog, https://github.com/Teslemetry/aiopowerwall/releases
+Author-email: Teslemetry <hello@teslemetry.com>
+License-Expression: MIT
+License-File: LICENSE
+Keywords: aiohttp,asyncio,home-assistant,powerwall,tedapi,tesla
+Classifier: Development Status :: 4 - Beta
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Home Automation
+Classifier: Typing :: Typed
+Requires-Python: >=3.11
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: cryptography>=41
+Requires-Dist: protobuf>=4.25
+Requires-Dist: tesla-protocol<4,>=1.4.0
+Provides-Extra: dev
+Requires-Dist: mypy>=1.8; extra == 'dev'
+Requires-Dist: pytest-asyncio>=0.23; extra == 'dev'
+Requires-Dist: pytest>=8; extra == 'dev'
+Requires-Dist: ruff>=0.5; extra == 'dev'
+Requires-Dist: types-protobuf; extra == 'dev'
+Description-Content-Type: text/markdown
+
+# aiopowerwall
+
+An async Tesla Powerwall 3 client built on `aiohttp`, written for Home
+Assistant and any other asyncio code.
+
+## Status
+
+**Beta (0.x).** The wire protocol and the public Python API may change
+between minor versions until 1.0. Pin a tight version range if you depend
+on this library in production.
+
+This library speaks the Powerwall's **TEDAPI v1r** protocol — RSA-signed
+protobuf messages directly to your Powerwall. It is intentionally
+scoped to:
+
+- Powerwall 3, and updated Powerwall 2 (untested)
+- Local LAN access only (no cloud telemetry)
+- Read + control commands (status, config, firmware, components,
+  max-backup, islanding, curtailment)
+
+The RSA key pair used for v1r authentication must be **registered with the
+gateway out-of-band**, typically via the Tesla Fleet API. This library
+consumes an already-paired private key — it does not implement registration.
+
+### Multi-Powerwall systems
+
+This client maintains a single v1r connection to the **leader** gateway and
+signs every request with the leader's DIN — which is correct, since the RSA
+key is only registered on the leader. On a multi-unit system the leader
+returns whole-site aggregate data, but **per-follower** vitals are not
+available over v1r: the leader ignores the `recipient.din` of a per-device
+query and echoes its own data, so iterating over followers would yield
+duplicates rather than per-unit readings. Reading individual follower units
+requires a separate WiFi-side TEDAPI connection to `192.168.91.1`, which this
+library does not implement.
+
+## Install
+
+```bash
+pip install aiopowerwall
+```
+
+## Quick start
+
+```python
+import asyncio
+from pathlib import Path
+from aiopowerwall import PowerwallClient, current_power
+
+async def main() -> None:
+    pem = Path("tedapi_rsa_private.pem").read_bytes()
+    async with PowerwallClient(
+        host="192.168.91.1",
+        gateway_password="<full gateway/WiFi password>",
+        rsa_private_key_pem=pem,
+    ) as pw:
+        await pw.connect()
+        print("DIN:", pw.din)
+        print("Battery SoC:", await pw.get_battery_soe(), "%")
+        print("Grid:", await pw.get_grid_status())
+        status = await pw.get_status()
+        print("Power:", current_power(status))
+
+asyncio.run(main())
+```
+
+`gateway_password` is the full gateway/WiFi password - the same value used
+to join the Powerwall's own AP. The gateway's local login only accepts the
+last 5 characters of it; `aiopowerwall` derives that truncation for you, so
+pass the full password.
+
+## No caching, no coalescing
+
+**Every method on `PowerwallClient` issues a fresh request to the gateway.**
+The library does not cache responses, deduplicate concurrent calls, or
+batch reads — the only state it holds across calls is the v1r session
+(login + DIN, established once by `connect()`).
+
+This keeps the library predictable but means callers are responsible for
+freshness control:
+
+- If you need several values from the same payload, fetch the payload
+  once and pass it to the pure helper functions (see below) rather than
+  calling multiple `get_*` methods.
+- If you poll on a fixed interval, do the polling in your own code; the
+  client will not throttle you.
+- If two coroutines call the same `get_*` method concurrently, the
+  gateway sees two requests.
+
+`connect()` is the single exception: it is idempotent and lock-protected,
+so concurrent callers share one login.
+
+## API surface
+
+| Method | Returns |
+| --- | --- |
+| `connect()` | DIN string (idempotent; required before other calls) |
+| `get_din()` | DIN string (calls `connect()` if needed) |
+| `get_config()` | `config.json` (dict) |
+| `get_status()` | DeviceController query (narrow) |
+| `get_device_controller()` | DeviceController query (extended) |
+| `get_components()` | Powerwall 3 component data |
+| `get_firmware_details()` | Firmware details dict |
+| `get_meters_aggregates()` | `/api/meters/aggregates` |
+| `get_battery_soe()` | Battery SoC on the **user-facing** scale (Tesla app / Fleet API) |
+| `get_battery_soe_raw()` | Battery SoC percentage (**raw** physical scale) |
+| `get_grid_status()` | Grid status string |
+| `get_backup_events()` | Active and scheduled backup events |
+| `list_authorized_clients()` | Registered client keys, roles, and states |
+
+### Writes and commands
+
+| Method | Effect |
+| --- | --- |
+| `write_config(updates)` | Patch `config.json` (dotted-path mapping) |
+| `set_operation_mode(mode)` | Set `default_real_mode` (`self_consumption`/`autonomous`/`backup`) |
+| `set_tou_mode(mode)` | Set time-of-use optimization mode (`strategy.TOU_mode`, local-only) |
+| `set_grid_import_export(…)` | Set export rule and/or grid-charging policy in one write |
+| `set_export_rule(rule)` | Set grid-export rule (`battery_ok`/`pv_only`/`never`) |
+| `set_on_grid_solar_curtailment(enabled)` | Enable/disable on-grid solar curtailment |
+| `set_grid_charging(enabled)` | Allow/disallow charging the battery from the grid |
+| `set_import_limit(kilowatts)` | Set max grid **import** power (kW) |
+| `set_export_limit(kilowatts)` | Set max grid **export** power (kW) |
+| `set_backup_reserve(percent)` | Set backup reserve on the **user-facing** scale (Tesla app / Fleet API) |
+| `set_backup_reserve_raw(percent)` | Set backup reserve as the **raw** `config.json` value |
+| `schedule_max_backup(seconds)` | Schedule a manual max-backup event |
+| `cancel_max_backup()` | Cancel the active manual backup event |
+| `set_island_mode(off_grid=, force=, …)` | Send `setIslandModeRequest` |
+| `go_off_grid(force=True)` | Convenience wrapper around `set_island_mode` |
+| `reconnect_grid()` | Convenience wrapper around `set_island_mode` |
+| `trigger_islanding()` | Send `triggerIslandingBlackStartRequest` |
+| `curtail(reserve_percent=100)` | Stop export via `backup` mode + reserve |
+| `restore_from_curtailment()` | Restore mode + reserve captured by `curtail` |
+| `curtailment_active` (property) | True between `curtail` and `restore_from_curtailment` |
+| `remove_authorized_client(public_key)` | Un-pair a client key, revoking its access |
+
+> **Removing a client key.** `remove_authorized_client` takes either raw DER
+> bytes or the base64 string exactly as `list_authorized_clients` reports it, so
+> a record can be round-tripped straight out of that listing. Note the
+> asymmetry: *adding* a key needs a physical presence proof on the gateway,
+> while removing one needs only an authenticated v1r session — including for a
+> `VERIFIED` record. Removing the key you are signing with will lock this client
+> out. The gateway's acknowledgement carries no fields, so call
+> `list_authorized_clients` afterwards if you need positive confirmation.
+
+> **Islanding.** `set_island_mode` / `go_off_grid` / `reconnect_grid` post a
+> local v1r command that operates the grid contactor. Verified on a Powerwall
+> 3: `go_off_grid()` opened the contactor (`islanding.contactorClosed` →
+> `false`) and `reconnect_grid()` closed it again (→ `true`). The PowerSync
+> project has reported firmwares that acknowledge the command without
+> actuating, so verify `get_status().islanding.contactorClosed` before relying
+> on it. `trigger_islanding` issues the explicit black-start command if the
+> mode-only request is a no-op on your gateway.
+
+> **Storm mode is not locally settable.** Storm Watch is a Tesla-cloud
+> feature with no local representation: `storm_mode_enabled` is absent from
+> the gateway's `config.json`, and a local v1r `write_config` of that key is
+> silently dropped (the gateway acks the write but the key never persists).
+> Verified bidirectionally on PW3 — a local write reaches neither the local
+> config nor Fleet, and toggling the setting on Fleet leaves zero local
+> trace. There is deliberately no `set_storm_mode` method; toggle it through
+> the Fleet API (`storm_mode(enabled)`) instead and read the setting back
+> from `site_info.storm_mode_enabled`. (`live_status.storm_mode_active` is a
+> different field — it reports only whether a storm is *currently* being
+> responded to, not whether the feature is enabled.)
+
+> **Export rule.** `set_export_rule(rule)` sets
+> `site_info.customer_preferred_export_rule` — `battery_ok` (export solar and
+> battery), `pv_only` (export solar only) or `never` (no export). It is a
+> plain string with no scaling, and `net_meter_mode` is a separate key that is
+> deliberately left untouched (verified independent on PW3: writing the export
+> rule never moves `net_meter_mode`). `set_export_rule` and `set_grid_charging`
+> are single-purpose wrappers over `set_grid_import_export`, which writes both
+> settings in one atomic read-modify-write when you pass both.
+
+> **On-grid solar curtailment.** `set_on_grid_solar_curtailment(enabled)` sets
+> `site_info.on_grid_solar_curtailment_enabled` (boolean, no scaling). The
+> gateway only stores the key while enabled: after enabling, `get_config`
+> shows the key `true`; after disabling, the key is **absent** (the gateway
+> drops it rather than storing `false`) — treat a missing key as disabled.
+
+> **Grid charging.** `set_grid_charging(enabled)` controls whether the
+> battery may charge from the grid. The gateway stores the *inverse*
+> `site_info.disallow_charge_from_grid_with_solar_installed` flag: enabling
+> grid charging removes the key (absent = allowed, the default), disabling it
+> sets the key `true`. Treat a missing key as "grid charging allowed".
+
+> **Time-of-use mode (local-only, unvalidated).** `set_tou_mode(mode)` writes
+> `strategy.TOU_mode`, which controls how the gateway optimizes battery
+> dispatch against a TOU tariff. It is **not exposed by the Tesla Fleet API**,
+> so a local write is the only way to change it. The gateway does **not**
+> validate the value (verified on PW3: an arbitrary string persists verbatim),
+> so this is a deliberate pass-through — `"economic"` is the only value
+> confirmed in use. The TOU **tariff schedule** itself is *not* settable here:
+> it lives in the Tesla cloud (`tariff_content_v2`, managed via the Fleet API
+> or an aggregator) and never appears in the local `config.json`.
+
+> **Site import/export limits.** `set_import_limit(kw)` and
+> `set_export_limit(kw)` cap grid power in **kilowatts**, matching the Tesla
+> app (the Tesla One installer app shows the same figure in watts, ×1000 — no
+> scaling in the config). They map to the site-meter power bounds:
+> `max_site_meter_power_ac` (import, positive) and `min_site_meter_power_ac`
+> (export, stored negative — pass a positive magnitude). Fractional kW are
+> accepted (verified on PW3: export 2.5 persisted verbatim). Mapping confirmed
+> on hardware — setting the import limit to 12 showed as the import limit in
+> the app.
+
+> **Backup-reserve scaling.** The gateway stores the reserve on a *raw*
+> scale that differs from what the Tesla app and Fleet API show: the bottom
+> 5% is an inaccessible buffer, so `raw = scaled * 0.95 + 5` (e.g. app-20%
+> is raw-24%, app-0% is raw-5%). `set_backup_reserve` takes the
+> **user-facing** value and applies that conversion for you;
+> `set_backup_reserve_raw` writes the raw value verbatim. Use the
+> `scaled_to_raw_reserve` / `raw_to_scaled_reserve` helpers to convert
+> explicitly.
+
+> **SoC scaling.** `battery_level(status)` returns the **user-facing** SoC
+> the Tesla app and Fleet API (`live_status.percentage_charged`) show. The
+> gateway reports SoC locally on a *raw* physical scale that includes the
+> bottom-5% buffer and so reads higher; `battery_level_raw(status)` and the
+> `/api/system_status/soe` reader `get_battery_soe_raw()` expose that raw
+> value. The transform is identical to reserve: `scaled = (raw - 5) / 0.95`
+> (verified on PW3: local raw 52.78% == Fleet 50.29%). Use the
+> `scaled_to_raw_soc` / `raw_to_scaled_soc` helpers to convert explicitly.
+
+### Pure helpers
+
+These operate on an already-fetched status payload — fetch once with
+`get_status()`, then call as many helpers as you need.
+
+| Function | Returns |
+| --- | --- |
+| `battery_level(status)` | SoC from status on the **user-facing** scale (Tesla app / Fleet API) |
+| `battery_level_raw(status)` | SoC from status on the **raw** physical scale |
+| `current_power(status)` | `{location: realPowerW}` map |
+| `backup_time_remaining(status)` | Hours of backup at current load |
+| `scaled_to_raw_reserve(percent)` | User-facing reserve % → raw config value |
+| `raw_to_scaled_reserve(percent)` | Raw config value → user-facing reserve % |
+| `scaled_to_raw_soc(percent)` | User-facing SoC % → raw value |
+| `raw_to_scaled_soc(percent)` | Raw SoC value → user-facing SoC % |
+
+## EnergySite-compatible adapter
+
+`PowerwallEnergySite` wraps a `PowerwallClient` to present the same surface as
+the Tesla Fleet API `EnergySite` **by convention (duck typing)** — matching
+method names, signatures, and `dict[str, Any]` return shapes without importing
+or depending on `tesla_fleet_api`. This lets a primary/secondary energy router
+use the local LAN path as primary and a cloud `EnergySite` as fallback.
+
+```python
+from aiopowerwall import PowerwallClient, PowerwallEnergySite
+
+site = PowerwallEnergySite(pw)  # wraps an existing client
+await site.connect_if_needed()  # router health signal → PowerwallClient.connect
+await site.operation("autonomous")
+await site.backup(20)           # user-facing reserve percent
+status = await site.live_status()
+```
+
+Conventions:
+
+- **Command return shape.** Implemented commands return the cloud energy
+  command envelope `{"response": {"code": 201, "message": "", "result": True}}`.
+  Data reads (`get_backup_events`, `live_status`, `list_authorized_clients`)
+  wrap their payload under `response`.
+- **Implemented locally:** `operation`, `backup`, `grid_import_export`,
+  `set_island_mode`, `go_off_grid`, `reconnect_grid`, `schedule_backup_event`,
+  `cancel_backup_event`, `get_backup_events`, `live_status`, `local_config`,
+  `list_authorized_clients`, and `find_authorized_clients`. Use the
+  `ISLAND_MODE_OFF_GRID` (6) / `ISLAND_MODE_ON_GRID` (1) constants with
+  `set_island_mode`.
+- **`list_authorized_clients`**, **`find_authorized_clients`**, and
+  **`remove_authorized_client`** all run over the local `AuthorizationMessages`
+  v1r command — no cloud round-trip. `add_authorized_client` is not wired up
+  locally and still falls back to the cloud (registration also needs a
+  physical presence proof, which the local path cannot provide).
+- **`find_authorized_clients()`** parses `list_authorized_clients`'s
+  payload into `AuthorizedClients`/`AuthorizedClient` (from
+  `aiopowerwall.authorized_clients`, also re-exported from `aiopowerwall`),
+  field-for-field aligned with
+  `tesla_fleet_api.teslemetry.energysite.TeslemetryEnergySite.find_authorized_clients`
+  so a caller needs no local/cloud conversion. Use `list_authorized_clients`
+  for the unparsed dict form. An unrecognized `state` (e.g. from newer gateway
+  firmware) is never dropped or raised on — it comes through as the raw int,
+  matching `tesla_fleet_api`'s own fallback.
+- **`schedule_backup_event`** accepts `start_time`/`priority` for signature
+  parity but does **not** honour them — the local event always starts now at
+  max priority.
+- **`live_status`** is best-effort from meters aggregates, the gateway status
+  query, and grid status. `percentage_charged`, `energy_left`, and
+  `total_pack_energy` all come from one `get_status()` read — the user-facing
+  SoC via `battery_level()`, and the Wh figures straight from
+  `control.systemStatus`. Cloud keys with no local v1r equivalent
+  (`backup_capable`, `grid_services_*`, `storm_mode_active`, `timestamp`,
+  `wall_connectors`) are returned as `None` rather than guessed.
+- **`local_config`** returns at most `backup_reserve_percent` (scaled via
+  `raw_to_scaled_reserve`) and `default_real_mode` from `get_config()`,
+  omitting a key when its source is absent from the local config document.
+- **`connect_if_needed`** is an extra (not part of the cloud `EnergySite`
+  surface): it delegates to `PowerwallClient.connect` and serves as the
+  router's health signal.
+- **`site_info` is intentionally absent** so the router falls through to the
+  cloud for it. Every other command with no faithful local mapping yet
+  (`storm_mode`, `time_of_use_settings`, the history reads, the gRPC device
+  commands, …) is scaffolded to raise
+  `NotImplementedError`, so a per-command-failover router cleanly falls back to
+  the cloud until the local path lands.
+
+## Exceptions
+
+All errors are subclasses of `PowerwallError`:
+
+- `PowerwallConnectionError` — transport failure / timeout
+- `PowerwallAuthenticationError` — bad password or unregistered RSA key
+- `PowerwallRateLimitError` — gateway returned 429/503
+- `PowerwallFaultError` — signed-message fault (key inactive, expired, etc.)
+- `PowerwallProtocolError` — malformed response
+
+## Acknowledgements
+
+This project builds on the protocol research and reference implementation in
+[`pypowerwall`](https://github.com/jasonacox/pypowerwall) by
+[Jason Cox](https://github.com/jasonacox), distributed under the
+[MIT License](https://github.com/jasonacox/pypowerwall/blob/main/LICENSE).
+Huge thanks to Jason and the pypowerwall contributors for reverse-engineering
+and documenting the TEDAPI protocol.
+
+## License
+
+MIT (see `LICENSE`). Original pypowerwall copyright and license notice are
+retained in `LICENSE`.
