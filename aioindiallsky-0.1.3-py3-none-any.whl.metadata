@@ -1,0 +1,98 @@
+Metadata-Version: 2.4
+Name: aioindiallsky
+Version: 0.1.3
+Summary: Asynchronous Python client library for indi-allsky API & WebSocket event stream.
+Author-email: "@TN-1" <hamish@hamishwest.xyz>
+License: MIT
+Project-URL: Homepage, https://github.com/TN-1/aioindiallsky
+Project-URL: Repository, https://github.com/TN-1/aioindiallsky
+Project-URL: Issues, https://github.com/TN-1/aioindiallsky/issues
+Project-URL: Changelog, https://github.com/TN-1/aioindiallsky/releases
+Project-URL: Documentation, https://github.com/TN-1/aioindiallsky#readme
+Keywords: indi-allsky,allsky,home-assistant,asyncio,aiohttp,astronomy,camera
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Scientific/Engineering :: Astronomy
+Classifier: Framework :: AsyncIO
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiohttp>=3.8.0
+Provides-Extra: test
+Requires-Dist: pytest>=7.0.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.20.0; extra == "test"
+Requires-Dist: aioresponses>=0.7.0; extra == "test"
+Dynamic: license-file
+
+# aioindiallsky
+
+Asynchronous Python client library for communicating with **indi-allsky** over HTTP and WebSocket event streams. Designed for Home Assistant custom components and Python automation scripts.
+
+## Installation
+
+```bash
+pip install aioindiallsky
+```
+
+## Quick Start Example
+
+```python
+import asyncio
+from aioindiallsky import IndiAllSkyClient, ExposureData, SensorData
+
+async def main():
+    async with IndiAllSkyClient(host="192.168.1.100", port=8080) as client:
+        # Register event callbacks (returns an unregister function)
+        async def on_exposure(exposure: ExposureData):
+            print(f"New Exposure! File: {exposure.filename}, Duration: {exposure.exposure}s, SQM: {exposure.sqm}")
+            # Fetch image bytes for Home Assistant Camera / Image entity
+            image_bytes = await client.fetch_image(exposure.filename)
+            print(f"Downloaded {len(image_bytes)} bytes")
+
+        def on_sensors(sensors: SensorData):
+            print("Sensor Update:")
+            for key, info in sensors.sensors.items():
+                print(f"  {info['name']}: {info['value']} {info['unit']}")
+
+        unsub_exposure = client.register_callback("exposure_complete", on_exposure)
+        unsub_sensors = client.register_callback("sensor_update", on_sensors)
+
+        # Connect and start listener
+        await client.connect()
+        try:
+            await client.listen()
+        finally:
+            unsub_exposure()
+            unsub_sensors()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Image & Media API
+
+* `await client.fetch_image(filename)`: Fetch raw binary image bytes (JPEG/PNG) for a given filename or relative path. Perfect for Home Assistant `ImageEntity` or `Camera` snapshot methods.
+* `await client.fetch_latest_image()`: Fetch raw binary bytes for the latest static snapshot (`public/latest.jpg`).
+* `client.get_image_url(filename)`: Generate the full HTTP URL for an image filename.
+
+## Supported Commands
+
+* `client.pause()`: Pause image capture loop
+* `client.unpause()`: Resume image capture loop
+* `client.reboot()`: Reboot host system
+* `client.shutdown()`: Shutdown host system
+* `client.restart_service(service_name)`: Restart service (`indi-allsky`, `indiserver`, `gunicorn`)
+* `client.generate_keogram()`: Trigger keogram compilation
+* `client.generate_timelapse()`: Trigger timelapse compilation
+* `client.generate_startrail()`: Trigger star trail compilation
+* `client.trigger_darks()`: Initiate dark frame capture sequence
