@@ -1,0 +1,79 @@
+Metadata-Version: 2.5
+Name: hydropeak-opendata
+Version: 0.2.0
+Summary: Async client for Hydro-Québec's public peak events (pointes hivernales) open data
+Project-URL: Homepage, https://github.com/Beat-YT/hydropeak-opendata
+Project-URL: Issues, https://github.com/Beat-YT/hydropeak-opendata/issues
+Author: Beat-YT
+License-Expression: MIT
+License-File: LICENSE
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Home Automation
+Requires-Python: >=3.11
+Requires-Dist: aiohttp>=3.9
+Provides-Extra: dev
+Requires-Dist: mypy>=1.10; extra == 'dev'
+Requires-Dist: pytest-aiohttp>=1.1; extra == 'dev'
+Requires-Dist: pytest-asyncio>=0.23; extra == 'dev'
+Requires-Dist: pytest>=8.0; extra == 'dev'
+Requires-Dist: ruff>=0.6; extra == 'dev'
+Description-Content-Type: text/markdown
+
+# hydropeak-opendata
+
+Async Python client for Hydro-Québec's public **peak events** (pointes hivernales) open data. No account, no login — just the open data feed.
+
+Extracted from the [HydroPeak](https://github.com/Beat-YT/hydropeak-ha) Home Assistant integration.
+
+## Data sources
+
+Data comes from [Hydro-Québec's open data portal](https://donnees.hydroquebec.com/explore/dataset/evenements-pointe/information/).
+
+During Quebec winters (December 1 to March 31), Hydro-Québec triggers **peak demand events** (_événements de pointe_) when electricity demand is high due to cold weather and operational constraints. Customers enrolled in participating offers (e.g. Winter Credit, Flex, Hilo) are asked to reduce their consumption during these events — typically in the morning (AM) or evening (PM) — and receive bill credits in return. The dataset is updated as events are scheduled, and covers both residential and business customers.
+
+- **[Peak events](https://donnees.hydroquebec.com/explore/dataset/evenements-pointe/information/)** — scheduled peak demand events with start/end times, time period (AM/PM), duration, applicable offer, and customer sector.
+- **[Available offers](https://donnees.hydroquebec.com/explore/dataset/evenements-de-pointe-offres-disponibles/information/)** — the list of programs available each season, with descriptions and validity dates (rate limited; intended for occasional use such as setup flows).
+
+## Usage
+
+```python
+import aiohttp
+from hydropeak_opendata import OpenDataClient
+
+async def main():
+    async with aiohttp.ClientSession() as session:
+        client = OpenDataClient(session)
+
+        offers = await client.get_available_offers()
+        # ('Credit hivernal Residentiel (CPC-D)', 'Flex Residentiel (TPC-DPC)', ...)
+
+        events = await client.get_events(offers[0])
+        for event in events:
+            print(event.start, event.end, event.period, event.duration)
+```
+
+Notes:
+
+- Offer identifiers are the strings published in `offresDisponibles`, used verbatim. The library applies no transformation; `get_events(offer)` filters by exact match.
+- `get_offer_labels()` maps each canonical offer identifier to a display label for UIs. Labels currently equal the identifiers; once Hydro-Québec publishes display titles in its open data, a library update will source labels from there without any change to the method's contract — persist the keys, show the values.
+- The client sends conditional requests (`If-None-Match`) and serves its cached parse on `304 Not Modified`, so frequent polling is cheap for both sides. Concurrent refreshes are serialized on a lock.
+- All datetimes from the feed are timezone-aware. `PeakEventsFeed.last_execution` is naive (the feed publishes it without an offset).
+- Errors raise typed exceptions: `OpenDataConnectionError`, `OpenDataRateLimitError`, `OpenDataResponseError`, `OpenDataParseError` — all subclasses of `OpenDataError`. Failures never silently return empty data.
+
+## Development
+
+```
+pip install -e .[dev]
+ruff check .
+mypy
+pytest
+```
+
+## License
+
+MIT

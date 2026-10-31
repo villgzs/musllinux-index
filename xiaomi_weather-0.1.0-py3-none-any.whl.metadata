@@ -1,0 +1,301 @@
+Metadata-Version: 2.5
+Name: xiaomi-weather
+Version: 0.1.0
+Summary: Typed asyncio client for Xiaomi Weather
+Project-URL: Repository, https://github.com/shirok1/python-xiaomi-weather
+Project-URL: Issues, https://github.com/shirok1/python-xiaomi-weather/issues
+Author-email: Shiroki Satsuki <me@shirok1.dev>
+License-Expression: Apache-2.0
+License-File: LICENSE
+License-File: NOTICE
+Classifier: Development Status :: 3 - Alpha
+Classifier: Framework :: AsyncIO
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Typing :: Typed
+Requires-Python: >=3.11
+Requires-Dist: aiohttp<4,>=3.13.5
+Description-Content-Type: text/markdown
+
+# xiaomi-weather
+
+A small, typed asyncio/aiohttp client for the **undocumented API used by Xiaomi
+Weather**. Independent of Home Assistant. Supports mainland-China `weathercn`
+city lookup, current conditions, daily/hourly forecasts and the observed AQI fields.
+No caching, retries, polling or synchronous client. Not affiliated with Xiaomi.
+The service may change or stop working without notice.
+
+Requires Python **3.11+**, including 3.14. The minimum follows use of
+`asyncio.timeout`; no Python 3.14-only syntax is required. The sole direct runtime
+dependency is `aiohttp>=3.13.5,<4` (3.13 added Python 3.14 support).
+
+## Installation
+
+After publication:
+
+```sh
+pip install xiaomi-weather
+```
+
+Until then, install this checkout with `pip install .` or a locally built wheel.
+On 2026-10-05, `https://pypi.org/pypi/xiaomi-weather/json` returned HTTP 404:
+there was no visible existing project, so `xiaomi-weather` was selected and the
+fallback `pyxiaomiweather` was unnecessary. Availability is not a reservation;
+PyPI may reserve names and the result must be rechecked before first publication.
+Nothing has been registered or uploaded by this project setup.
+
+## Standalone use
+
+```python
+import asyncio
+
+from xiaomi_weather import XiaomiWeatherClient, XiaomiWeatherError
+
+
+async def main() -> None:
+    try:
+        async with XiaomiWeatherClient() as client:
+            locations = await client.locate(39.9, 116.4)
+            if not locations:
+                print("No supported weathercn city found")
+                return
+            # Applications should offer a choice when there are multiple matches.
+            city = locations[0]
+            weather = await client.get_weather(city.city_id, 39.9, 116.4)
+            print(city.name, weather.current.temperature)
+            print(weather.current.weather_code)  # Xiaomi code, e.g. "1"
+            daily = weather.forecast_daily
+            if daily is not None and daily.temperature is not None:
+                print(daily.temperature.unit, daily.temperature.value)
+    except XiaomiWeatherError as err:
+        print(f"Weather unavailable: {err}")
+
+
+asyncio.run(main())
+```
+
+Supply the lookup coordinates with each weather request. `city_id` is a bare
+nine-digit identifier starting with `101`, e.g. `101010100`. Geographic input
+must be finite, latitude in [-90, 90], longitude in [-180, 180]. The client uses
+the reference application's `zh_cn`, `isGlobal=false`, 15-day request parameters;
+actual forecast length is controlled by the provider.
+
+## Inject a session
+
+```python
+import asyncio
+import aiohttp
+from xiaomi_weather import XiaomiWeatherClient
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        async with XiaomiWeatherClient(session, timeout=20) as client:
+            weather = await client.get_weather("101010100", 39.9, 116.4)
+            print(weather.current.temperature.value)
+        assert not session.closed  # only the outer context owns this session
+
+
+asyncio.run(main())
+```
+
+`XiaomiWeatherClient(session=None, *, timeout=20)` creates its own session lazily
+inside the running event loop. Use `async with` or `await client.close()`.
+`close()` is idempotent and never closes an injected session. A closed client
+cannot be reused, even with an external session. Keep a client on one event loop;
+finish/cancel its outstanding requests before closing it. Constructor does no I/O.
+The request timeout bounds the entire network operation; each request happens once.
+
+## Public API and data
+
+- `await client.locate(latitude, longitude) -> tuple[Location, ...]`
+- `await client.get_weather(city_id, latitude, longitude) -> WeatherData`
+- `parse_weather(payload: JSONValue) -> WeatherData` and
+  `parse_locations(payload: JSONValue) -> tuple[Location, ...]` for offline parsing.
+- Frozen dataclasses exported at package root: `Measurement`, `Pair`, `Series`,
+  `Wind`, `CurrentWeather`, `DailyWind`, `DailyForecast`, `HourlyWind`,
+  `HourlyForecast`, `WeatherData`, `Location`, `DailyForecastEntry`,
+  `HourlyForecastEntry`, `AirQuality`. `JSONValue` describes diagnostic raw JSON.
+
+Python attributes use snake_case (`pubTime` → `pub_time`, `feelsLike` →
+`feels_like`, `forecastDaily` → `forecast_daily`, `sunRiseSet` → `sun_rise_set`).
+`Pair.from_` and `Pair.to` retain the provider's `from`/`to` values. `Series.value`
+is a tuple whose `None` entries **preserve original indices**, with independent
+`unit` and `pub_time` fields. Arrays are never truncated to a common length.
+
+| Field | Representation / observed unit |
+| --- | --- |
+| `current.temperature`, `current.feels_like` | `Measurement(value, unit)`, `℃` |
+| `current.humidity` | `Measurement`, `%` |
+| `current.pressure` | `Measurement`, `hPa` |
+| `current.visibility` | `Measurement`, `km` |
+| `current.wind.speed`, `.direction` | `Measurement`, `km/h` and `°` |
+| `current.uv_index` | finite float or `None`; dimensionless |
+| `current.weather_code`, hourly `weather_code` | Xiaomi numeric code as a string; unknown codes retained (original `weather` fields also supported) |
+| `current.pub_time`, series `pub_time`, solar times | aware `datetime`, original UTC offset retained |
+| `forecast_daily.temperature` | `Series[Pair[float]]`, observed from=high, to=low, `℃` |
+| `forecast_daily.weather` | `Series[Pair[str]]`, observed from=day, to=night |
+| `forecast_daily.sun_rise_set` | `Series[Pair[datetime]]`, from=sunrise, to=sunset |
+| `forecast_daily.wind.speed`, `.direction` | `Series[Pair[float]]`, from=day, to=night; `km/h`, `°` |
+| `forecast_daily.precipitation_probability` | `Series[float]`, observed percentages 0–100, no rounding or fractional scaling |
+| `forecast_hourly.temperature`, `.weather` | separate `Series`; each has its own hourly start `pub_time` |
+| `forecast_hourly.wind` | `Series[HourlyWind]`; each entry has `datetime`, speed, direction |
+| `Location` | location_key, city_id property, name, affiliation, latitude, longitude, raw |
+| `air_quality` | `AirQuality` with `aqi`, `pm25`, `pm10`: finite floats or `None`; source does not declare AQI scale or concentration units |
+
+The legacy hourly wind fixture omits a unit: the typed series keeps `unit=None`.
+The reference weathercn integration interprets speed as km/h and direction as
+degrees. Applications may apply that provider-specific policy explicitly;
+the library never invents units. Unknown explicit units are preserved, never
+silently relabeled. No Celsius/Fahrenheit or UTC conversion takes place.
+
+Required current temperature needs a finite value and a nonempty explicit unit;
+current `pubTime` must carry a timezone. Missing/failed optional blocks become
+`None`; malformed array elements remain `None` at their original positions.
+Booleans, blank/non-numeric values, NaN, infinity and `-999` are unavailable
+numbers; zero is valid. Failed status blocks are isolated. Probabilities outside
+0–100 are unavailable. Invalid or naive optional dates become `None`, while
+other values in the same series remain accessible.
+
+`WeatherData.raw` and `Location.raw` retain the complete received JSON for
+diagnostics and experimentation, including status codes and unmodeled fields.
+Raw retention does not imply semantic support: alerts and moon phase, for example,
+are not currently modeled. Use `weather.air_quality` for the supported AQI fields;
+normal use of supported capabilities should not require raw JSON parsing.
+Raw dictionaries are mutable, excluded from dataclass equality, and are not
+synchronized with parsed fields. Offline parsers retain the passed dictionary
+by reference; treat it as caller-owned data. Typed forecast data is immutable.
+
+Daily and twice-daily HA forecast objects are **application projections**, not
+separate upstream endpoints. Build them from daily pairs and solar times;
+use `iter_daily()` and `iter_hourly()` for provider-level alignment. See [HA migration](docs/ha-migration.md).
+
+## Aligned forecasts without another request
+
+Use the result's synchronous iterators to avoid joining provider arrays yourself:
+
+```python
+from xiaomi_weather import WeatherData
+
+
+def show_forecasts(weather: WeatherData) -> None:
+    for day in weather.iter_daily():
+        print(
+            day.index, day.temperature_high, day.temperature_low, day.temperature_unit
+        )
+        print(day.day_weather_code, day.night_weather_code, day.sunrise, day.sunset)
+
+    for hour in weather.iter_hourly():
+        print(
+            hour.time,
+            hour.temperature,
+            hour.temperature_unit,
+            hour.weather_code,
+            hour.wind_speed,
+            hour.wind_speed_unit,
+        )
+```
+
+Both methods return fresh iterators over frozen dataclasses. Missing forecast
+blocks yield no entries. There is no I/O, mutation, cache, unit conversion,
+condition mapping or filtering of entries with missing temperatures.
+The original `forecast_daily`, `forecast_hourly` and `raw` remain available.
+
+`iter_daily() -> Iterator[DailyForecastEntry]` aligns by original array index,
+using the **longest** of temperature, weather, solar, probability and both wind
+series. An entirely empty position still has an entry; shorter arrays contribute
+`None`. Entries expose `index`, `temperature`, `temperature_unit`, `weather`,
+`sun_rise_set`, `precipitation_probability`, `precipitation_probability_unit`,
+`wind_speed`, `wind_speed_unit`, `wind_direction`, `wind_direction_unit`.
+Use semantic properties `temperature_high`, `temperature_low`, `day_weather_code`,
+`night_weather_code`, `sunrise`, `sunset` without decoding `from_`/`to` yourself.
+Original pairs remain supported: a missing `from_` never removes a valid `to`.
+No midnight, calendar date or daytime flag is invented.
+
+`iter_hourly() -> Iterator[HourlyForecastEntry]` computes each temperature and
+weather sequence's times from **its own** aware `pub_time` plus its original
+hour index. Wind uses each entry's explicit datetime. It emits the chronological
+**union** of these timelines, including temperature gaps and weather/wind-only
+instants. Entries expose `time`, `temperature`, `temperature_unit`, `weather`,
+`wind_speed`, `wind_speed_unit`, `wind_direction`. Both views retain unknown
+codes, zeros and explicit unfamiliar units; daily probabilities stay unrounded.
+
+Equal instants match even when timezone offsets differ. Different starting times
+are aligned at their actual overlapping instants, not rejected wholesale or
+joined by index. No rounding to an hour is performed. Duplicate wind timestamps
+use the last entry, including its missing fields. The output time keeps the
+first available source offset in temperature, weather, wind order. A series unit
+labels that source's field even if a particular row has no value. Legacy hourly
+wind still has no explicit unit; no direction unit is invented.
+
+Hourly values without an aware time, or beyond datetime's representable range,
+cannot be placed on a timeline: they remain accessible in the original series
+and `raw`. They are not assigned another series' timestamp. These views do not
+replace the lossless source structures and do not turn missing data into zero.
+
+## Stability and supported scope
+
+[The public API contract](docs/api-contract.md) defines supported fields,
+normalization, absence, equality and version compatibility. The library adapts
+observed upstream representation changes behind this interface; applications
+should not need a new raw parser each time Xiaomi changes a supported field.
+Semantic property names and existing public models are both supported.
+
+`raw` itself follows Xiaomi's response and has no field-layout compatibility
+promise. Unmodeled data requires implementation and tests before it is a
+supported feature. The observed AQI fields are now modeled:
+
+```python
+from xiaomi_weather import WeatherData
+
+
+def show_air_quality(weather: WeatherData) -> None:
+    quality = weather.air_quality
+    if quality is not None:
+        print(quality.aqi, quality.pm25, quality.pm10)
+```
+
+Missing AQI blocks/fields are optional. No pollutant unit or AQI standard is
+inferred from bare numbers. HA display conditions and user-selected unit
+conversion remain integration responsibilities.
+
+## Exceptions
+
+All service failures derive from `XiaomiWeatherError`:
+
+| Exception | Meaning |
+| --- | --- |
+| `TransportError` | aiohttp connection/TLS/transfer failure |
+| `RequestTimeoutError` | timeout; subclass of `TransportError` |
+| `HTTPError` | unsuccessful HTTP response; integer `.status` (including 429) |
+| `InvalidResponseError` | invalid JSON/content type, response structure, failed or unusable required current data |
+
+Original transport/decoding exceptions are chained. HTTP response bodies and
+coordinate-bearing URLs are not included in error messages. `ValueError` signals
+invalid caller arguments, `RuntimeError` a closed client/session. `asyncio.CancelledError`
+is never caught or converted. Empty supported-location results are not errors.
+
+## Development and release
+
+```sh
+uv sync --locked
+uv run pytest --cov=xiaomi_weather --cov-report=term-missing
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run python -m build
+uv run twine check --strict dist/*
+uv run python scripts/check_dist.py
+```
+
+Tests use local fixtures, mocked aiohttp boundaries and a loopback HTTP server;
+no live API calls are part of testing. Strict mypy checks both package and tests.
+CI runs Python 3.11–3.14 and verifies wheel/sdist installation and `py.typed`.
+
+See [release setup](docs/releasing.md) for manual GitHub/PyPI configuration and
+[design decisions](docs/design.md) for official HA requirements and scope.
+License: [Apache-2.0](LICENSE). See [NOTICE](NOTICE) and
+[fixture provenance](tests/fixtures/README.md) for Home Assistant attribution.

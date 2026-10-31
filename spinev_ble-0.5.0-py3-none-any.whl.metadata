@@ -1,0 +1,274 @@
+Metadata-Version: 2.5
+Name: spinev-ble
+Version: 0.5.0
+Summary: local bluetooth le control for exicom spin ev chargers
+Project-URL: Homepage, https://github.com/Dr-Blank/spinev-ble
+Project-URL: Repository, https://github.com/Dr-Blank/spinev-ble
+Project-URL: Issues, https://github.com/Dr-Blank/spinev-ble/issues
+Author-email: Dr-Blank <64108942+Dr-Blank@users.noreply.github.com>
+License-Expression: MIT
+License-File: LICENSE
+Keywords: ble,bleak,bluetooth,ev charger,evse,exicom,home assistant,spin air,spin ev
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Home Automation
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Typing :: Typed
+Requires-Python: >=3.11
+Provides-Extra: bleak
+Requires-Dist: bleak-retry-connector>=4.0.0; extra == 'bleak'
+Requires-Dist: bleak>=0.22.0; extra == 'bleak'
+Description-Content-Type: text/markdown
+
+# spinev-ble
+
+Local control for Exicom Spin EV chargers, over Bluetooth or over the charger's own OCPP connection.
+
+No cloud, no vendor app, no account, no internet. Not affiliated with Exicom.
+
+## How it fits together
+
+| Layer | What it does | Dependencies |
+|---|---|---|
+| Codec (`spinev_ble.protocol`) | Turns commands into frames and frames back into values | none |
+| Charger client (`SpinEvCharger`) | One method per charger feature: status, start, stop, limits, settings | none |
+| Transports (`spinev_ble.transports`) | Carry the frames to the charger | per transport |
+
+The charger speaks one register protocol whatever carries it, so the client is the same everywhere and you pick the transport:
+
+| Transport | Reaches the charger through | Needs |
+|---|---|---|
+| `BleTransport` | Bluetooth LE, locally or through an ESPHome Bluetooth proxy | `spinev-ble[bleak]` |
+| `OcppTunnelTransport` | The charger's OCPP 1.6 connection to your central system | nothing, you supply the `DataTransfer` call |
+| your own | Anything that implements `SpinEvTransport` | whatever it needs |
+
+## Install
+
+```bash
+pip install spinev-ble            # codec, charger client, OCPP transport; zero dependencies
+pip install spinev-ble[bleak]     # adds the Bluetooth transport and the CLI
+```
+
+Python 3.11 or newer.
+
+## Just the protocol
+
+Nothing here needs a Bluetooth stack. Build a frame, send it however you like, decode what comes back.
+
+```python
+from spinev_ble import Command, Register, build_control, build_read
+from spinev_ble import parse_frame, decode_float, decode_uint, ChargerState
+
+build_control(Command.START, password=0xABCDEF).hex()  # '10ac3c0101abcdef'
+build_control(Command.STOP, password=0xABCDEF).hex()  # '10ac3c0110abcdef'
+build_read(Register.POWER).hex()  # '10ac840000000000'
+
+reply = parse_frame(bytes.fromhex("10ac840045713d71"))
+decode_float(reply.raw)  # 3859.84 watts
+
+state = decode_uint(bytes.fromhex("00000004"))
+ChargerState(state)  # ChargerState.CHARGING
+```
+
+To carry frames yourself instead of using a transport: over Bluetooth, write them to characteristic `49535343-1e4d-4bd9-ba61-23c647249616` with response and read replies as notifications on the same characteristic.
+
+## Charger client
+
+`SpinEvCharger` takes the transport to talk through, and optionally the charger's Bluetooth password, which start and stop commands carry:
+
+```python
+async with SpinEvCharger(transport, password=0xABCDEF) as charger:
+    status = await charger.async_get_status()
+    print(status.state.name, status.power_w, "W")
+
+    await charger.async_start_charging()
+```
+
+`ChargerStatus` is an immutable snapshot. Every reading is `None` if the charger did not supply it, so check before formatting. When the charger reports a state this library does not name, `status.state` is `None` and `status.state_value` holds the raw number, rather than the whole read failing.
+
+Register reads are logged as an id and length, never the decoded value, since some registers hold credentials.
+
+## Transports
+
+### Bluetooth
+
+Needs the `bleak` extra.
+
+```python
+import asyncio
+
+from bleak import BleakScanner
+from spinev_ble import BleTransport, SpinEvCharger
+
+
+async def main() -> None:
+    device = await BleakScanner.find_device_by_address("AA:BB:CC:DD:EE:FF")
+    if device is None:
+        raise SystemExit("charger not found, is the phone app connected to it?")
+
+    async with SpinEvCharger(BleTransport(device), password=0xABCDEF) as charger:
+        print(await charger.async_get_power(), "W")
+
+
+asyncio.run(main())
+```
+
+`BleTransport` takes `client_class` to swap the Bluetooth client for anything matching `BleakClientLike`. For example `habluetooth.HaBleakClientWrapper` reaches the charger through an ESPHome Bluetooth proxy. It is called as `client_class(device, timeout=..., disconnected_callback=...)`. `max_attempts=1` gives a fast answer when the charger's single Bluetooth slot is taken.
+
+### OCPP
+
+A charger connected to an OCPP 1.6 central system takes the same register frames over that connection, as a `DataTransfer` with vendor id `CPV07` and message id `CC_CONFIG`. `OcppTunnelTransport` wraps that, so every `SpinEvCharger` method works through your central system with no Bluetooth at all.
+
+The transport depends on no OCPP library. Give it a function that sends one `DataTransfer` to the charger and returns the reply's status and data. With the `ocpp` package:
+
+```python
+from ocpp.v16 import call
+
+from spinev_ble import OcppTunnelTransport, SpinEvCharger
+
+
+async def data_transfer(vendor_id: str, message_id: str, data: str):
+    result = await charge_point.call(
+        call.DataTransfer(vendor_id=vendor_id, message_id=message_id, data=data)
+    )
+    return result.status, result.data
+
+
+async with SpinEvCharger(OcppTunnelTransport(data_transfer)) as charger:
+    await charger.async_set_current_limit(16)
+    print(await charger.async_get_current_limit())
+```
+
+- The charger's JSON parser refuses whitespace between tokens, so the central system must send compact JSON.
+- The streamed history read can't travel through the tunnel and raises `SpinEvUnsupportedError`. The central system sees sessions as OCPP transactions instead.
+- Call `notify_disconnected()` on the transport when the charger's OCPP connection drops, so requests in flight fail at once.
+
+### Your own
+
+Anything that implements `SpinEvTransport` can carry the frames: `is_connected`, `async_connect(on_frame, on_disconnect)`, `async_disconnect()` and `async_send(frame)`. The client serialises its requests, so `async_send` is never called concurrently.
+
+## Command line
+
+Installed with the `bleak` extra.
+
+```bash
+spinev-ble scan                  # find chargers nearby
+spinev-ble password              # ask the charger for its own password
+spinev-ble status                # live telemetry
+spinev-ble history               # stored charging sessions
+spinev-ble start                 # start charging
+spinev-ble stop                  # stop charging
+```
+
+Or `python -m spinev_ble ...` if you prefer.
+
+Pass the password through the environment rather than `--password`, so it stays out of your shell history and out of the process list:
+
+```bash
+export SPINEV_BLE_PASSWORD=0xABCDEF
+spinev-ble start
+```
+
+## Your charger's Bluetooth password
+
+Start and stop commands carry a per charger password. Reads do not need it, so telemetry works without one.
+
+Ask the charger for it:
+
+```bash
+spinev-ble password
+```
+
+That reads register `0x32` on your own charger.
+
+Treat it as a credential: do not commit it, and do not paste it into an issue.
+
+## What is supported
+
+| Feature | Register | API |
+|---|---|---|
+| Start and stop charging | `0x3C` | `async_start_charging`, `async_stop_charging` |
+| Charger state | `0x67` | `async_get_state`, `async_get_state_value` |
+| Active power, voltage, current | `0x84`, `0x0A`, `0x14` | `async_get_power`, `async_get_voltage`, `async_get_current` |
+| Session energy and duration | `0x35`, `0x59` | `async_get_status` |
+| Lifetime energy and duration | `0x65`, `0x6A` | `async_get_status` |
+| Charging history (Bluetooth only) | `0x68` | `async_get_history` |
+| Firmware version | `0x52` | `async_get_status` |
+| Active alarms | `0x39` | `async_get_alarms`, `async_get_alarm_defs` |
+| Charging current limit | `0x4F` | `async_get_current_limit`, `async_set_current_limit` |
+| Charger password | `0x32` | `async_get_password` |
+| WiFi settings | `0x61`, `0x63` | `async_get_wifi_ssid`, `async_set_wifi` |
+| OCPP settings | `0x5E`, `0x60`, `0x62`, `0x64` | `async_get_ocpp_config`, `async_set_ocpp_config` |
+
+### Alarms
+
+The charger keeps its alarms in two 32 bit words on register `0x39`. Both are read: the first like any register, the second with `ALARM_BANK2_FLAG` in the flag byte. `async_get_alarms` returns the names from both, and `async_get_alarm_defs` returns `AlarmDef` entries carrying the charger's own fault code, severity and firmware constant as well.
+
+```python
+for alarm in await charger.async_get_alarm_defs():
+    print(alarm.name, alarm.code, alarm.severity)  # L1 Overcurrent 302 Critical
+```
+
+`severity` is an `AlarmSeverity` (`Critical`, `Major`, `Minor`, `Warning`) or `None` where the charger assigns none. It is a `StrEnum`, so it compares equal to its label.
+
+The second word holds the three phase and peripheral faults; it reads all clear on a single phase unit. The same bit means different things in each word, so a word must be decoded against its own bank:
+
+```python
+from spinev_ble import ALARMS, build_alarm_read, decode_alarms
+
+build_alarm_read(2).hex()  # '10ac391000000000'
+decode_alarms(1 << 15, bank=1)  # ['SPD Fail']
+decode_alarms(1 << 15, bank=2)  # ['Unexpected CP Voltage']
+```
+
+`ALARMS` is the whole table, both banks. Passing any bank other than 1 or 2 raises `SpinEvProtocolError`.
+
+A charger whose firmware does not answer the bank 2 read is treated as reporting no bank 2 alarms, so bank 1 still reaches the caller.
+
+Bank 1 bits 10 and 11 are separate faults, the LCD board and the LED board. Bits 18 to 24 are unused, and bits 25 to 31 are configuration change flags rather than faults, so neither range is decoded.
+
+## Things worth knowing
+
+**Writing network settings can strand the charger.** `async_set_wifi` and `async_set_ocpp_config` change how the charger reaches the outside world. A wrong value leaves it unable to connect until it is re-provisioned. Read the values back afterwards, and keep the phone app available to restore the originals.
+
+**Current limits are model specific.** `async_set_current_limit` guards against anything below 6 A or above 32 A. 32 A is the ceiling of the top single phase unit; three phase and lower rated models differ, so pass `max_amps` to match yours and read the limit back to confirm what the charger accepted.
+
+**One Bluetooth connection at a time.** These chargers accept a single Bluetooth client. While the phone app is connected you cannot connect, and vice versa. Close the app fully, not just to the background.
+
+**Commands are not instant.** The charger acknowledges immediately, updates its state register after about a second, and starts delivering power about two seconds later. Do not treat a missing state change in the first second as a failure.
+
+**History timestamps are not charging duration.** A record's end timestamp lines up with the next record's start, so it marks unplug time rather than the moment charging stopped. Sessions can span days while only drawing power for part of that. Do not compute average power from energy divided by duration.
+
+**History is a rolling window.** The charger keeps only recent sessions, not everything.
+
+**Do not poll hard.** Once every thirty seconds is plenty for monitoring, and five seconds is enough for a live power graph.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run prek run --all-files
+uv run pylint src/spinev_ble
+```
+
+Install the git hook so `prek` runs automatically on commit:
+
+```bash
+uv run prek install
+```
+
+## Disclaimer
+
+Independent, unofficial project providing Python API bindings for local access. Not affiliated with, endorsed by, or supported by Exicom.
+
+Provided "as is", without warranty of any kind, express or implied, as stated in the Licence below. Use of this library, and of your charger's Bluetooth and OCPP interfaces, is at your own risk and subject to your charger's own terms of use and warranty.
+
+## Licence
+
+MIT

@@ -1,0 +1,486 @@
+Metadata-Version: 2.5
+Name: sofar-modbus
+Version: 0.25.0
+Summary: Read Sofar Solar inverters (HYD, KTL-X and the older PV/storage range) over Modbus.
+Project-URL: Homepage, https://github.com/darkrain-nl/sofar-modbus
+Author: sofar-modbus contributors
+License: Apache-2.0
+License-File: LICENSE
+Keywords: home-assistant,inverter,modbus,sofar,sofar-solar,solar
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Home Automation
+Requires-Python: >=3.12
+Requires-Dist: modbus-connection[tmodbus]>=4.12.1
+Description-Content-Type: text/markdown
+
+# sofar-modbus
+
+Read Sofar Solar inverters over Modbus, as typed Python objects rather than
+register numbers.
+
+The library maps Sofar's register set onto
+[modbus-connection](https://github.com/home-assistant-libs/modbus-connection)'s device model:
+you hand it a `ModbusUnit`, call `async_update()`, and read sub-systems as
+attributes. It owns no connection and no I/O policy — the caller does.
+
+## Supported devices
+
+Sofar ships two quite different register maps, so there are two device objects.
+
+**`SofarInverter` — the current generation.** HYD hybrids and KTL-X / KTLM PV
+inverters, over the 0x0400 (state and identity), 0x0480 (grid), 0x0500
+(off-grid), 0x0580 (PV), 0x0600 (battery), 0x0680 (energy), 0x1000 (settings)
+and 0x9000 (BTS battery tower) blocks. Serial prefixes: `SP1`, `SP2`, `ZP1`,
+`ZP2`, `SM2E`, `ZM2E`, `SH3E`, `SS2E`, `ZS2E`, `SQ1ES1`, `SA1`, `SB1`, `SC1`,
+`SD1`, `SF4`, `SH1`, `SL1`, `SJ2`, `SS1`. Includes the Azzurro and ZCS
+rebadges. This is the only generation with writable registers.
+
+**`SofarLegacyInverter` — the older generation.** The earlier PV inverters
+(`SA1`, `SA3`, `SB1`, `ZA3`, `SC1`, `SD1`, `SF4`, `SH1`, `SJ2`, `SL1`, `SM1`)
+and the `SE1E` / `SM1E` / `ZE1E` / `ZM1E` storage inverters, over the 0x0000 and
+0x0200 blocks, with the serial number in the input-register space. Read-only.
+
+Within a generation, what an inverter serves depends on its model: single or
+three phase, PV-only or hybrid, how many MPPT trackers, whether off-grid (EPS)
+and parallel-system registers exist. `async_detect()` reads the serial number
+and settles this into an `InverterType` bitmask; each component declares the
+mask it applies to, and a poll reads only the matching ones. Nothing else is
+touched: an inverter without batteries never sees a battery register. A caller
+that already knows the serial number passes it to the constructor instead,
+which reads nothing.
+
+A serial matching none of the prefixes above takes its type from the
+inverter's own address masks (see below), during `async_detect()` or, for a
+device built from its serial, during setup:
+phase count from the grid block, PV or hybrid from the battery block, the MPPT
+tier from the highest PV string served, and a BTS tower from the tower's mask.
+This is derived from Sofar's register map, not checked against every model, so
+the model name stays `None`. An inverter publishing no usable mask keeps the
+empty type and polls nothing, and `unrecognized` turns True to say so. A mask
+read that times out leaves it False, so a sleeping inverter is never called
+unrecognized. `async_detect_type(unit)` asks the
+same question without a device, for a caller vetting a serial before setup.
+
+## Usage
+
+```python
+import asyncio
+
+from modbus_connection import ModbusSerialParams
+from modbus_connection.tmodbus import ModbusConnection
+from sofar_modbus import SofarInverter
+
+
+async def main() -> None:
+    connection = ModbusConnection(
+        ModbusSerialParams(device="socket://192.168.1.50:8899")
+    )
+    try:
+        inverter = await SofarInverter.async_detect(connection.for_unit(1))
+        await inverter.async_update()
+
+        print("Model:", inverter.model, inverter.serial_number)
+        print("State:", inverter.state.system_state)
+        print("Grid power:", inverter.grid.active_power_output_total, "kW")
+        print("PV power:", inverter.pv_1_2.pv_power_total, "kW")
+        print("Battery SoC:", inverter.battery_totals.battery_capacity_total, "%")
+        print("Solar today:", inverter.energy.solar_generation_today, "kWh")
+    finally:
+        await connection.close()
+
+
+asyncio.run(main())
+```
+
+A poll reads each sub-system independently, the way the integration reads its
+blocks: one slow or refused block does not take the rest of the poll with it.
+The exception is a run of registers several sub-systems tile — the older
+generation's storage block and its three-phase PV block — where a read of one
+already spans the others, so they are pooled into that single request and
+reported under one name (`storage_block`, `pv_block`).
+Every update method returns an `UpdateReport` — a failed component keeps its
+previous values, does not notify its listeners, and is listed by attribute
+name with its error, while every other component refreshes and notifies once
+the whole poll is done. A dead link (`ModbusConnectionError`) raises, and so
+does a timeout before any component has answered — an inverter that is simply
+not responding is not walked block by block, paying a timeout for each.
+
+`SofarInverter` reads a failed component once more within the same poll, as
+long as another one answered, so a single dropped frame does not cost a value.
+Its report lists only what failed both times, and listeners fire once both
+attempts are in:
+
+```python
+report = await inverter.async_update()
+for name, error in report.failed.items():
+    print(f"{name} kept its previous values: {error}")
+```
+
+### Faults are grouped by subsystem, not by register
+
+The inverter reports faults as 26 bitmask registers, `state.fault_1` through
+`state.fault_30`. A register is wire format: `fault_11` happens to hold four
+shutdown bits and seven fan bits, and battery faults are spread over nine
+different registers. Several bits are set at once, so no single one of them is
+"the" fault.
+
+`state.active_faults` decodes the lot into the subsystem each bit belongs to:
+
+```python
+from sofar_modbus.modern import FaultCategory
+
+faults = inverter.state.active_faults
+for fault in faults:
+    print(fault.id, fault.key, fault.category)
+
+if any(fault.category is FaultCategory.BATTERY for fault in faults):
+    print("something is wrong with the battery")
+```
+
+Each `Fault` carries the vendor's ID, a stable snake_case `key`, and one of the
+17 `FaultCategory` members. `FAULTS` is the full table of the 353 faults the
+register map defines, and `FAULTS_BY_ID` indexes it. A register that has not
+been read yet contributes nothing, so `active_faults` never reports a fault the
+inverter did not actually answer for.
+
+The bitmasks only say what is wrong right now, so a fault that clears between
+two polls never shows. The inverter also keeps a log of every fault it raised,
+and `fault_log.entries` holds its newest ten, newest first:
+
+```python
+for entry in inverter.fault_log.entries:
+    print(entry.occurred_at, entry.fault.key)
+```
+
+`occurred_at` is naive, in the inverter's own clock. Unused slots and IDs not
+in `FAULTS` are left out. No address mask covers the log, so setup reads it
+once and stops polling it on a model that refuses it, answers junk, or stays
+silent through three tries. Once the log has answered, `has_fault_log` turns
+true: store it and pass it back as `SofarInverter(..., has_fault_log=True)`,
+and setup never drops the log again, whatever the link does that day.
+
+### Numbered strings and corrected totals
+
+PV and battery strings are also reachable by number, as typed views that read
+through whichever component polls them:
+
+```python
+from sofar_modbus.modern import PV_STRING_COMPONENTS
+
+for number, component in PV_STRING_COMPONENTS.items():
+    if component in inverter.readings_components:
+        string = inverter.pv_string(number)
+        print(number, string.voltage, string.power)
+```
+
+`BATTERY_STRING_COMPONENTS` and `battery_string()` do the same for battery
+strings. A number outside the mapping raises `ValueError`. A model serving
+eight battery strings still answers for the ones with nothing attached, so
+`wired_battery_strings` names the served ones that report a voltage.
+
+An energy counter can read back a torn value mid-update. Each one has a
+`*_corrected` handle that holds it at its high-water mark through such a read:
+
+```python
+total = inverter.energy.solar_generation_total_corrected
+total.seed(restored_value)  # before the first poll, e.g. from a saved state
+await inverter.async_update_readings()
+print(total.value)
+```
+
+A seed only ever raises the mark, so a stale saved state seeded late cannot
+undo what a poll already read.
+
+### Measurements and settings refresh separately
+
+`SofarInverter` splits its poll by what it reads:
+
+- `async_update_readings()` — what the inverter measures: power, yield, battery,
+  state, faults.
+- `async_update_settings()` — what it has been configured to do: registers that
+  change when something writes them, not on their own.
+- `async_update()` — both, in one merged report, for a caller that does not want
+  to schedule them apart.
+
+A report names only what the method it came from polled, and listeners fire at
+the end of the poll that read them, so a settings poll does not hold up the
+measurements. A settings poll is also how a write is read back: run one after
+writing a register to see what took effect.
+
+```python
+await inverter.async_update_readings()  # every cycle
+await inverter.async_update_settings()  # rarely, and after a write
+```
+
+`readings_components` and `settings_components` stay empty until the first
+poll settles what the inverter serves, which needs it to answer. A caller that
+has to lay out entities before then, say at night, can use
+`expected_readings_components` and `expected_settings_components`, or
+`expected_components` for both as one set: the components the serial's type
+implies, without touching the link. Once setup
+settles they return the same lists as the plain properties, so setup can still
+add the off-grid components it probed for and drop the ones a mask denies. An
+unrecognised serial expects nothing, as its type comes from the masks.
+
+This is worth scheduling: a three-phase HYD hybrid polls 286 registers in 31
+blocks, of which the settings are 45 registers in 11 blocks. A single-phase
+KTL-M splits 145 registers in 12 blocks into 139 read and 6 configured.
+
+`identity`, the serial number and firmware versions, is in neither poll: it
+never changes, and nothing reads it unasked. `async_read_identity()` reads it,
+three tries against a blip, then a warning instead of an error. After that,
+each poll that gets an answer tries once more until it reads. An inverter from
+`async_detect()` already has it.
+
+`SofarLegacyInverter` has no writable settings, so it refreshes all of its
+served components in one pass through `async_update()`, and does not offer the
+two split update methods.
+
+Writing works the same way: a typed method per setting, which also covers the
+registers the device insists on receiving as a block. `write()` by field name
+still reaches any writable field.
+
+```python
+from sofar_modbus.modern import ChargerUseMode, FeedinLimitationMode
+
+await inverter.charger.async_write_mode(ChargerUseMode.PASSIVE_MODE)
+await inverter.feed_in.async_write_limit(FeedinLimitationMode.DISABLED, 3000)
+await inverter.passive.async_write_power(
+    grid_power=-2000, battery_min=0, battery_max=5000
+)
+await inverter.active_power_control.async_write_active_power_limit(True, 70)
+```
+
+`active_power_control` is a live throttle on the inverter's own output — distinct
+from `feed_in`, which caps power exported to the grid. It applies to PV-only
+inverters as well as hybrids, and takes effect within seconds.
+
+Two commands write a register without a setting behind it: `async_set_time()`
+sets the inverter's clock, and `async_start_iv_curve_scan()` sweeps the PV
+strings. `supports_set_time` and `supports_iv_curve_scan` say whether this
+model takes them: the clock on PV and hybrid inverters, the scan on hybrids.
+
+A BTS battery tower multiplexes every pack onto one register block, so packs are
+read one at a time rather than polled:
+
+```python
+if inverter.has_battery_tower:
+    pack = await inverter.async_read_pack(pack_nr=0)
+    print(pack.pack_serial_number, pack.soc, pack.cell_1_voltage)
+```
+
+0x900D says which packs there are: its high byte, `parallel_group_count`, is
+how many groups run in parallel, and its low byte, `packs_per_group`, how many
+packs each group holds. Every pack is a group and a pack number, so iterate
+both: a tower of three groups of one pack reports 0x0301 and serves
+`group_nr` 0, 1 and 2, each as `pack_nr` 0. Once a pack answers,
+`packs_in_group` confirms the count from its own registers, and
+`cells_in_pack` says how many cells it has.
+
+Selecting a pack writes the selection register (0x9020), and the tower switches
+a moment later, so `async_read_pack()` waits up to about three seconds for
+`pack_id` to name the pack before reading. A tower that never switches is read
+anyway, so check `pack_id`. Asking for the pack a tower already serves writes
+nothing, so a tower that rejects the register still reports its current pack.
+
+For an issue report, `async_read_raw()` dumps every register the inverter reads
+undecoded, keyed by address space and address — every block a poll covers, for
+the sub-systems this model serves. It fires no update listeners — a download is
+not a poll, though the fields it reads do refresh. The pack block is not in it:
+a dump of it would be whichever pack happened to be selected, with nothing to
+say which. `redact_serial=True` leaves the serial number's registers out, for a
+dump that will be posted publicly.
+
+`async_read_masks()` is the other half of an issue report. Every 64-address
+block of this generation opens with a four-register mask naming which of its
+registers the model actually serves, and this returns one per block, keyed by
+the block's base address; bit *n* of a mask is `base + n`. It is worth having
+because an inverter answers a register it does not serve rather than refusing
+it, usually with zeros but not always, so the mask is the only dependable
+statement of what a model supports. Blocks answering no mask are left out, and
+the battery tower's blocks are only asked for when the inverter reports a tower,
+since asking without one buys a timeout. The meter counters are dropped when
+the energy block's mask denies them, and an unrecognised serial takes its type
+from them.
+
+## Checking a real inverter
+
+`script/query.py` reads one inverter once and prints every value it serves,
+which is the quickest way to see whether an inverter is reachable, addressed
+correctly, and detected as the model you expect:
+
+```bash
+# a gateway answering Modbus TCP: pass no framing (502 is the default)
+uv run script/query.py 192.168.1.50 --port 502 --unit 1
+# a box forwarding the RTU frames over TCP
+uv run script/query.py socket://192.168.1.50:8899 --transport serial --unit 1
+# a USB or serial adapter, on an older-generation inverter
+uv run script/query.py /dev/ttyUSB0 --transport serial --unit 1 --legacy
+# every register read, plus ranges the library does not model
+uv run script/query.py 192.168.1.50 --raw --registers 0x1480:40 --registers 0x2004
+# a hybrid with a BTS tower, every pack included
+uv run script/query.py 192.168.1.50 --packs
+```
+
+Which line fits depends on what sits between you and the inverter's RS-485
+line, as [Naming the link](#naming-the-link) explains. With a gateway answering
+Modbus TCP, leave the framing out: `--framer rtu` there times out on every
+register, which looks exactly like an inverter asleep.
+
+The two generations share serial prefixes, so the script does not guess which
+one it is talking to: pass `--legacy` for an older inverter. It prints the read
+count as well, so a poll's request budget is visible against real hardware
+rather than only in the tests. It follows the count with how long those reads
+took, median, p95 and slowest, which is what to judge a timeout against.
+`--raw` adds every register it read, undecoded, which is what an issue about a
+wrong value should quote.
+
+For a current-generation inverter it also prints the address masks and the type
+they declare on their own, next to the type from the serial. A mismatch there,
+such as the masks declaring a PV string the serial's profile lacks, is the
+first thing to look for when entities are missing. The lines after it are the
+library's own verdicts (unrecognized, battery tower, wired battery strings,
+clock and IV-curve support), which decide what Home Assistant creates.
+`--registers ADDR[:COUNT]` reads any holding range raw, up to 125 registers
+per range, for checking a register the library does not model yet. All of
+these reads come after the poll, so they do not count towards its timings.
+`--packs` reads every pack of a BTS tower, which is not polled. Selecting a pack
+writes the tower's selection register (0x9020), so this is the one option that
+writes; without it the script only reads.
+
+## Naming the link
+
+An inverter answers RTU on its RS-485 line, so how to name the link depends on
+what sits between you and that line, not on the inverter:
+
+| Between you and the line | Parameters |
+| :--- | :--- |
+| Nothing: a USB or serial adapter | `ModbusSerialParams(device="/dev/ttyUSB0")` |
+| A box forwarding the RTU frames | `ModbusSerialParams(device="socket://host:port")` |
+| A gateway answering Modbus TCP | `ModbusTcpParams(host=...)` |
+
+The second one is what `ModbusTcpParams(framer="rtu")` used to spell, which
+modbus-connection 4.12 deprecates: those frames are a serial line however they
+reach you, so a consumer pooling connections by endpoint opened two links onto
+one half-duplex bus when two callers spelled it differently.
+
+ASCII framing is unsupported either way. This library never accepts or forwards
+it, and it exposes no connect helper that could, since the caller builds the
+`ModbusUnit` and hands it over. An ASCII-framed link is untested here and
+nothing works around it.
+
+## How long a request waits
+
+The timeout is spent per request, not per poll, so it is what a poll loses on
+every register block that goes unanswered. Setup spends it deliberately: probing
+for off-grid registers, or for a battery tower that is not there, means waiting
+one out. An inverter itself is quick, and a 48-register block came back in a
+median 243 ms on a 4.4 KTLX-G3 over TCP, but what sits between it and you varies
+far more than the inverter does, so neither device object guesses a value. The
+connection's own default, 10 seconds, applies.
+
+Measure before choosing one. `SofarInverter` times every request it makes, and
+`inverter.link_stats` holds the latency and failures of the last 200 of them;
+`inverter.connected` says whether the link is open. For the older generation,
+`sofar_modbus.tuning.TimedUnit` wraps a `ModbusUnit` to the same effect, which
+is where `query.py`'s numbers come from: hand the wrapper to the inverter
+instead of the unit and read its `stats`.
+
+A caller who has measured their link states it with `timeout=` on either
+constructor or on `async_detect()`, which asks for it through
+`ModbusUnit.require_timeout()`. Two things to know before setting one: the
+connection runs with the largest value any of its units asks for, so a device
+sharing the link can raise it, and a lowered value takes effect at the next
+connect rather than on the link already open.
+
+## Tuning the link from its own traffic
+
+`SofarInverter` paces its link from what its own polls tell it, with nothing
+for the caller to do. A poll that gives up and raises, because the link is down
+or nothing answered, counts too: its reads towards the gap's budget, and its
+opening requests towards the pause after connecting.
+
+The older generation has no tuner of its own. `LinkTuner` does the same for
+it: give it the wrapper the inverter reads through, and hand it each poll's
+outcome:
+
+```python
+from sofar_modbus.tuning import LinkTuner, TimedUnit
+
+timed = TimedUnit(connection.for_unit(1))
+inverter = await SofarLegacyInverter.async_detect(timed)
+tuner = LinkTuner(timed)
+
+while True:
+    try:
+        tuner.observe(await inverter.async_update())
+    except ModbusError as err:
+        tuner.observe_failure(err)
+        raise
+```
+
+It tunes two things. The timeout is not one of them: the connection runs with
+the largest timeout any of its units asks for, and a unit that asks for nothing
+does not count, so a lower one would also hold every device sharing the link
+to it.
+
+**The gap between frames.** A device that cannot take requests back to back
+says so by answering the wrong exchange (`ModbusDesyncError`), by reporting
+itself busy, or by going quiet on a component that was answering a moment ago.
+A desync widens the gap at once, the other two after three polls, up to 200 ms.
+Twenty quiet polls give a step back, and each widening doubles the patience
+before that is tried again. A `budget=` caps the whole thing: the gap is never
+wider than that many seconds spread over the reads one poll makes, so a poll
+cannot outgrow its interval. Registers a model has never served are exempt,
+since chasing an absent block would widen the gap forever.
+
+**The pause after the link opens.** Some devices are not ready to answer the
+moment the socket is. Two opening requests that go unanswered earn a quarter
+second, then half, then one, then two. This one is never given back: it costs a
+single wait per connect, and a device that needed it still does.
+
+`inverter.link_tuning` (or `tuner.tuning`) is what it asks of the link, which
+is worth putting in a diagnostics download. A standalone tuner can also be
+stored and restored:
+
+```python
+tuner.restore(saved)  # before the first poll
+...
+save(tuner.tuning)  # whenever it changes
+```
+
+Restoring brings back the patience that came with a wider gap, so a crowded
+line is not narrowed again straight after every restart.
+
+The gap is per unit, so it paces this inverter's own frames and no one else's.
+A line shared with another device cannot be quieted from here, only from
+whoever builds the connection.
+
+## Debug logging
+
+The `sofar_modbus` logger says, at `DEBUG`, why a device is polled the way it
+is and what the tuner changed:
+
+- which model a serial identified as, the type an unrecognised one declared in
+  its masks, whether the off-grid block answered, which components a mask
+  denied, and the final poll list
+- every change the tuner makes to the gap between frames or the pause after
+  connecting, and each step it wanted to take but was already at its limit for
+- a battery pack starting or stopping to answer, including a tower still serving
+  another pack; a pack that keeps answering logs only once
+
+The device lines name the inverter by serial number. The tuner's do not, since
+a tuner only holds the unit it tunes.
+
+## Attribution
+
+The register maps are derived from
+[homeassistant-solax-modbus](https://github.com/wills106/homeassistant-solax-modbus)
+(Apache-2.0), specifically its `plugin_sofar.py` and `plugin_sofar_old.py`. This
+library keeps that project's field keys, scale factors, units and per-model
+filtering, and is released under the same licence.
+
+Where upstream declares the same key twice, this library keeps both fields and
+the docstring on each carries upstream's name. Addresses follow the
+manufacturer's protocol spec where the two disagree: PV string 6's power is read
+at 0x0595, not aliased onto string 6's current register as upstream has it.

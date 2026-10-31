@@ -1,0 +1,79 @@
+Metadata-Version: 2.4
+Name: haveniaq
+Version: 0.1.0
+Summary: Async Python client for HAVEN IAQ local HTTP APIs
+Project-URL: Homepage, https://haveniaq.com
+Project-URL: Repository, https://github.com/krhtzoa/haveniaq-python
+Project-URL: Issues, https://github.com/krhtzoa/haveniaq-python/issues
+Author: krhtzoa
+License-Expression: Apache-2.0
+License-File: LICENSE
+Keywords: air-quality,haven,home-assistant,iaq
+Classifier: Development Status :: 3 - Alpha
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Requires-Python: >=3.12
+Requires-Dist: aiohttp>=3.9.0
+Description-Content-Type: text/markdown
+
+# haveniaq
+
+Async Python client for version 1 of the HAVEN IAQ local HTTP API.
+
+The client supports capability-based data handling and local communication with:
+
+| Product | Product type | Capabilities |
+| --- | --- | --- |
+| Room Air Monitor | `ram` | Air quality |
+| Central Air Monitor | `cam` | Air quality and airflow |
+| HAVEN Controller | `cac` | Relay state |
+
+## Installation
+
+```bash
+python -m pip install haveniaq
+```
+
+## Reading device data
+
+```python
+from aiohttp import ClientSession
+from haveniaq import Capability, HavenClient
+
+async with ClientSession() as session:
+    client = HavenClient("haven-device.local", session=session)
+    info = await client.get_info()
+    status = await client.get_status()
+
+    if info.supports(Capability.AIR_QUALITY):
+        sensors = await client.get_sensors()
+```
+
+The default base URL is `http://<host>:80/api/v1`. The client requires devices
+to advertise `api_version`, `product_type`, and `capabilities` from `/info`.
+
+HAVEN Controller support is read-only in version 0.1.0.
+
+## Security model
+
+Version 1 is intended for trusted local networks. Communication uses unencrypted
+HTTP and devices do not require API authentication. Do not expose device HTTP
+ports outside the local network.
+
+Please report security issues privately as described in
+[`SECURITY.md`](https://github.com/krhtzoa/haveniaq-python/blob/main/SECURITY.md).
+
+## Development
+
+```bash
+python -m pip install -e .
+pytest
+ruff check .
+```
+
+Licensed under the Apache License 2.0.

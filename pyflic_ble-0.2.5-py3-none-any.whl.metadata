@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: pyflic-ble
+Version: 0.2.5
+Summary: Python library for Flic smart button BLE communication
+Author-email: Shortcut Labs <support@flic.io>
+License-Expression: Apache-2.0
+Project-URL: Homepage, https://github.com/50ButtonsEach/pyflic-ble
+Project-URL: Repository, https://github.com/50ButtonsEach/pyflic-ble
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Home Automation
+Classifier: Topic :: Software Development :: Libraries
+Requires-Python: >=3.12
+License-File: LICENSE
+Requires-Dist: bleak>=0.21.0
+Requires-Dist: bleak-retry-connector>=3.0.0
+Requires-Dist: cryptography>=41.0.0
+Dynamic: license-file
