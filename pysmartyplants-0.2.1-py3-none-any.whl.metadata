@@ -1,0 +1,61 @@
+Metadata-Version: 2.4
+Name: pysmartyplants
+Version: 0.2.1
+Summary: Async client for the SmartyPlants integration API
+Author: SmartyPlants
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/smartyplantstech/pysmartyplants
+Project-URL: Issues, https://github.com/smartyplantstech/pysmartyplants/issues
+Keywords: smartyplants,plants,sensors,home-assistant
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Home Automation
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiohttp>=3.9
+Dynamic: license-file
+
+# pysmartyplants
+
+Async client for the SmartyPlants integration API, used by the
+[Home Assistant](https://www.home-assistant.io) SmartyPlants integration.
+
+## Install
+
+```bash
+pip install pysmartyplants
+```
+
+## Use
+
+```python
+import asyncio
+from pysmartyplants import SmartyPlantsClient
+
+
+async def main() -> None:
+    async with SmartyPlantsClient("sp_your_api_key") as client:
+        for sensor in await client.async_get_sensors():
+            print(sensor.name, sensor.readings.moisture.value if sensor.readings else None)
+
+        for plant in await client.async_get_plants():
+            print(plant.name, plant.environment)
+
+
+asyncio.run(main())
+```
+
+Responses are parsed into frozen dataclasses — `Sensor`, `PlantDetail`,
+`Readings`, `Health`, `Account` — so fields have known types and a malformed
+value is dropped at the boundary rather than surfacing later. `SensorUpdate`
+parses a webhook body, and `Sensor.merge()` applies one to a polled sensor,
+keeping any field the push left out.
+
+Pass `session=` to reuse an existing `aiohttp.ClientSession`; the client then
+leaves its lifecycle to you, which is how Home Assistant uses it.
+
+Errors are raised as `SmartyPlantsAuthError` (key rejected) or
+`SmartyPlantsConnectionError` (unreachable, non-JSON, or malformed response),
+both subclasses of `SmartyPlantsError`.
