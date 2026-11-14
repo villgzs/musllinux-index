@@ -1,0 +1,46 @@
+Metadata-Version: 2.4
+Name: tank_utility
+Version: 1.5.1
+Summary: A smart propane tank monitor.
+Home-page: https://git.io/k20e
+Author: Kris Molendyke
+Author-email: kris@k20e.com
+License: MIT
+Project-URL: Source, https://github.com/krismolendyke/tank-utility
+Project-URL: Bug Tracker, https://github.com/krismolendyke/tank-utility/issues
+Keywords: propane monitor
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+License-File: LICENSE.txt
+Requires-Dist: requests>=2.0
+Requires-Dist: urllib3
+Provides-Extra: dev
+Requires-Dist: bumpversion; extra == "dev"
+Requires-Dist: pylint; extra == "dev"
+Requires-Dist: pre-commit; extra == "dev"
+Requires-Dist: yapf; extra == "dev"
+Provides-Extra: test
+Requires-Dist: coverage; extra == "test"
+Requires-Dist: responses; extra == "test"
+Requires-Dist: tox; extra == "test"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: license-file
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: summary
+
+A simple CLI and library for getting data from a `TankUtility`_ propane tank monitor via its `API`_.
+
+.. _TankUtility: https://www.tankutility.com/
+.. _API: http://apidocs.tankutility.com

@@ -1,0 +1,179 @@
+Metadata-Version: 2.4
+Name: loqedAPI
+Version: 2.1.16
+Summary: Python package to use the Loqed Smart Door Lock APIs in a local network. To be used by Home Assistant.
+Author-email: Casper Polhout <cpolhout@gmail.com>, Mike Woudenberg <mwoudenberg@xebia.com>
+License: BSD 2-Clause License
+        
+        Copyright (c) 2017, pyexample
+        All rights reserved.
+        
+        Redistribution and use in source and binary forms, with or without
+        modification, are permitted provided that the following conditions are met:
+        
+        * Redistributions of source code must retain the above copyright notice, this
+          list of conditions and the following disclaimer.
+        
+        * Redistributions in binary form must reproduce the above copyright notice,
+          this list of conditions and the following disclaimer in the documentation
+          and/or other materials provided with the distribution.
+        
+        THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+        AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+        DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+        FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+        SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+        CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+        OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+        OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+        
+Project-URL: Homepage, https://github.com/cpolhout/loqedAPI
+Project-URL: Bug Tracker, https://github.com/cpolhout/loqedAPI/issues
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: BSD License
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiohttp>=3.8
+Requires-Dist: async-timeout
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: aioresponses; extra == "dev"
+Requires-Dist: aiohttp<3.14; extra == "dev"
+Dynamic: license-file
+
+# Loqed Touch Smart Lock — Python client
+
+This repository provides a small async-first Python client for the Loqed Touch smart lock. It wraps [the HTTP API used by Loqed devices](https://support.loqed.com/en/articles/6127856-loqed-local-bridge-api-integration) and exposes convenient helpers to read lock state, send lock/unlock commands, and manage webhooks.
+
+## Quick start
+
+1. Install the package (recommended: in a virtualenv):
+
+Using [`uv`](https://docs.astral.sh/uv/) (recommended):
+
+```bash
+uv venv
+uv pip install -e .
+```
+
+Using `pip`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+2. Install dev/test dependencies (optional):
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+or with `pip`:
+
+```bash
+pip install -e ".[dev]"
+```
+
+> Note: quote `.[dev]` (as above) — in zsh, an unquoted `.[dev]` is interpreted as a
+> glob pattern and fails with `no matches found: .[dev]`.
+
+3. Use the client (async):
+
+```python
+import asyncio
+from loqedAPI.loqed import APIClient, LoqedAPI
+
+async def main():
+	client = APIClient(base_url="https://api.loqed.com", token="your-api-token")
+	api = LoqedAPI(client)
+
+	# fetch a lock by id
+	lock = await api.async_get_lock("lock-id")
+	print("state:", lock.bolt_state)
+
+	# send an unlock command
+	await lock.unlock()
+
+asyncio.run(main())
+```
+
+Notes:
+
+- The library is async-first and uses `aiohttp` for HTTP calls.
+- `APIClient` accepts `base_url` and an optional `token` (for authorization) or you can provide your own `aiohttp.ClientSession`.
+
+### Online status
+
+`Lock.online` is `True` when the lock is connected to the bridge. It is read from `lock_online` in the `/status` response (refreshed by `Lock.update()`) and kept current by `trigger_online_status` webhooks (bit 8, enabled by the default `registerWebhook` flags), which carry `ble_strength` (`-1` means not connected) and `wifi_strength`.
+
+While the lock is offline the bridge reports `battery_percentage` as `-1`, so check `lock.online` before using the battery value.
+
+## Testing
+
+Run the test suite with pytest (the project uses `pytest-asyncio` and `aioresponses`).
+
+With `uv` (no need to activate the venv or pre-install anything — `uv run` syncs the
+`dev` extra into an ephemeral environment automatically):
+
+```bash
+uv run --extra dev pytest --cov=src/loqedAPI --cov-report=term-missing
+```
+
+With `pip`/a manually activated venv:
+
+```bash
+source .venv/bin/activate
+pytest --cov=src/loqedAPI --cov-report=term-missing
+```
+
+## Development
+
+- The package follows standard Python packaging with `pyproject.toml` (version is
+  derived from git tags via `setuptools-scm`).
+- Dev/test dependencies are available under the `dev` extra: `uv pip install -e ".[dev]"`
+  or `pip install -e ".[dev]"`.
+- When editing code, run the tests frequently. The tests are fast and designed to mock network calls.
+
+## Contributing
+
+If you want to contribute:
+
+1. Fork the repo, create a branch, and make your changes.
+2. Add or update tests for new behavior.
+3. Run the test suite and ensure all tests pass.
+4. Open a pull request with a short description of the change.
+
+## Releasing
+
+Releases are built and published to PyPI automatically by a public GitHub Actions
+workflow (`.github/workflows/release.yml`) — there is no manual/local publish step.
+
+To cut a release:
+
+1. Draft a [GitHub Release](https://github.com/cpolhout/loqedAPI/releases) with a
+   tag in the form `vX.Y.Z` (e.g. `v2.1.12`).
+2. Publish the release. The package version is derived from the tag via
+   `setuptools-scm`, so the version on PyPI always matches a tagged commit in
+   this repository.
+3. CI runs the test suite, builds the sdist/wheel, and publishes to PyPI using
+   [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (no
+   stored API tokens).
+
+## Where to find docs
+
+- Source code is under `src/loqedAPI`.
+- Sphinx documentation lives in `docs/`.
+
+## License
+
+See the `LICENSE` file in the project root.

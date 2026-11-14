@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: pynx584
+Version: 0.9.0
+Summary: NX584/NX8E Interface Library and Server
+Home-page: http://github.com/kk7ds/pynx584
+Author: Dan Smith
+Author-email: dsmith+nx584@danplanet.com
+Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)
+License-File: LICENSE
+Requires-Dist: requests
+Requires-Dist: stevedore
+Requires-Dist: prettytable
+Requires-Dist: pyserial
+Requires-Dist: flask
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: summary

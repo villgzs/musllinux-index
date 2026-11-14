@@ -1,0 +1,45 @@
+Metadata-Version: 2.4
+Name: agent-py
+Version: 0.0.25
+Summary: A python wrapper around the Agent REST API.
+Home-page: https://github.com/ispysoftware/agent-py
+Author: Sean Tearney
+Author-email: sean@ispyconnect.com
+License: Apache Software License
+Platform: any
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE.md
+Requires-Dist: aiohttp
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license
+Dynamic: license-file
+Dynamic: platform
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+A python wrapper around the [Agent](https://www.ispyconnect.com/download.aspx) API. 
+
+Create package:
+
+\agent-py>python3 setup.py sdist bdist_wheel
+
+install locally:
+
+\agent-py\dist>pip install agent-py-0.0.1.tar.gz
+
+uninstall locally:
+
+pip uninstall agent-py

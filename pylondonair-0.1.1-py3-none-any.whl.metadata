@@ -1,0 +1,199 @@
+Metadata-Version: 2.5
+Name: pylondonair
+Version: 0.1.1
+Summary: Async Python client for the London Air (Imperial College London) air-quality API
+Project-URL: Homepage, https://github.com/MichaelMKKelly/pylondonair
+Project-URL: Repository, https://github.com/MichaelMKKelly/pylondonair
+Project-URL: Issues, https://github.com/MichaelMKKelly/pylondonair/issues
+Project-URL: Changelog, https://github.com/MichaelMKKelly/pylondonair/blob/main/CHANGELOG.md
+Author-email: Michael Kelly <pylondonair@michaelkelly.co.uk>
+License: MIT
+License-File: LICENSE
+Keywords: aiohttp,air-quality,api-client,async,london
+Classifier: Development Status :: 4 - Beta
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Natural Language :: English
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Typing :: Typed
+Requires-Python: >=3.12
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: tzdata; sys_platform == 'win32'
+Provides-Extra: dev
+Requires-Dist: mypy>=1.10; extra == 'dev'
+Requires-Dist: pytest-asyncio>=0.23; extra == 'dev'
+Requires-Dist: pytest-cov>=5.0; extra == 'dev'
+Requires-Dist: pytest>=8.0; extra == 'dev'
+Requires-Dist: ruff>=0.5; extra == 'dev'
+Description-Content-Type: text/markdown
+
+# pylondonair
+
+Async Python client for the [London Air](https://www.londonair.org.uk/) hourly
+air-quality monitoring index, published by
+[Imperial College London](https://www.imperial.ac.uk/).
+
+`pylondonair` fetches the hourly monitoring index for the Greater London
+monitoring network and parses it into clean, typed, immutable data models. It
+is the data layer behind the [Home Assistant London Air integration](https://www.home-assistant.io/integrations/london_air/),
+but it is a standalone library with no Home Assistant dependency and can be
+used from any async Python project.
+
+- **Async-first** — built on [`aiohttp`](https://docs.aiohttp.org/); the only
+  runtime dependency (plus `tzdata` on Windows).
+- **Typed** — `mypy --strict` clean, ships a `py.typed` marker, full type
+  hints.
+- **Immutable models** — frozen dataclasses; safe to share across tasks.
+- **No auth, no config** — the public feed requires no credentials.
+
+## Installation
+
+```console
+pip install pylondonair
+```
+
+Requires Python 3.12 or newer.
+
+## Quickstart
+
+```python
+import asyncio
+
+from pylondonair import LondonAirClient
+
+
+async def main() -> None:
+    async with LondonAirClient() as client:
+        data = await client.async_update()
+
+    print(data.group_name)  # "London"
+    print(data.time_to_live)  # minutes until the feed is expected to refresh
+    for authority in data.authorities.values():
+        print(authority.name, authority.status)
+        for site in authority.sites:
+            print("  ", site.site_name, site.status, site.updated)
+            for pollutant in site.pollutants:
+                print("    ", pollutant.summary)  # e.g. "PM10 is Low"
+
+
+asyncio.run(main())
+```
+
+### Reusing an existing session
+
+If you already manage an `aiohttp.ClientSession` (for example, Home Assistant
+passes its shared session), inject it. The client will **not** close a session
+it did not create:
+
+```python
+import aiohttp
+from pylondonair import LondonAirClient
+
+async with aiohttp.ClientSession() as session:
+    client = LondonAirClient(session=session)
+    data = await client.async_update()
+    # `session` is still open and owned by you.
+```
+
+### Connection check
+
+`async_test_connection()` performs a lightweight GET + status check without
+parsing the payload. It is intended for config-flow style validation:
+
+```python
+await client.async_test_connection()  # raises LondonAirConnectionError on failure
+```
+
+## Data model
+
+`async_update()` returns a `LondonAirData`:
+
+| Model | Description |
+| --- | --- |
+| `LondonAirData` | Top level: `group_name`, `time_to_live` (minutes), `authorities` (dict keyed by authority name). |
+| `Authority` | A local authority: `name`, `code`, centre coordinates, `sites`, `status`. |
+| `Site` | A monitoring site: `site_code`, `site_name`, `site_type`, coordinates, `updated` (aware `datetime`), `pollutants`, `status`, `number_of_pollutants`. |
+| `Pollutant` | A single species reading: `code`, `description`, `quality` (band), `index`, `summary` (e.g. `"PM10 is Low"`), `index_source`. |
+
+All models are frozen dataclasses (immutable). `Pollutant`, `Site`, and
+`Authority` are also hashable; `LondonAirData` is not, because its
+`authorities` mapping is not hashable.
+
+### Status aggregation
+
+- `Site.status` is the most common pollutant quality band at that site. If a
+  site has no usable species it is the sentinel string `no_species_data`
+  (exported as `NO_SPECIES_DATA`).
+- `Authority.status` is the most common site status, excluding the sentinel.
+  It is `None` when the authority has no sites or all sites are
+  `no_species_data`.
+
+Ties are broken by first appearance in the payload.
+
+### `@TimeToLive`
+
+The feed carries a `@TimeToLive` attribute (minutes) indicating how long the
+data is expected to remain current. `pylondonair` parses it into
+`LondonAirData.time_to_live`. If the attribute is missing or non-numeric it
+defaults to `60` and a warning is logged.
+
+### WGS84 fields (footgun)
+
+The API exposes `@...WGS84` coordinate fields. Despite the name, these are
+**projected metres** (a projected coordinate system), **not** decimal degrees.
+`pylondonair` includes them verbatim under the API-faithful names
+(`latitude_wgs84`, `longitude_wgs84`, `centre_latitude_wgs84`,
+`centre_longitude_wgs84`) as `str | None`. Do **not** treat them as lat/long
+degrees; use the plain `latitude`/`longitude` fields (decimal degrees) for
+geographic purposes.
+
+## Error handling
+
+`pylondonair` raises a small, dedicated hierarchy rooted at `LondonAirError`:
+
+| Exception | Raised when |
+| --- | --- |
+| `LondonAirConnectionError` | Network failure, timeout, or a non-2xx HTTP response. |
+| `LondonAirUpdateError` | The payload is malformed or structurally invalid (bad JSON, missing sections, unparseable dates). |
+
+```python
+from pylondonair import (
+    LondonAirClient,
+    LondonAirConnectionError,
+    LondonAirUpdateError,
+)
+
+try:
+    data = await client.async_update()
+except LondonAirConnectionError:
+    ...  # transient; retry later
+except LondonAirUpdateError:
+    ...  # unexpected payload shape; inspect and report
+```
+
+### Logging
+
+On the error path the client **raises** and does **not** log; you are
+responsible for logging. This keeps the library free of presentation
+concerns and avoids double-logging when a consumer (such as the Home
+Assistant integration) logs the exception itself.
+
+The one exception is a non-fatal data-quality notice: if a payload is
+missing a numeric `@TimeToLive`, the parser logs a single `WARNING` and
+defaults to `60` (see the `@TimeToLive` section above). This is emitted on a
+successful parse, not on the error path.
+
+## Attribution
+
+Air quality data is provided by
+[London Air](https://www.londonair.org.uk/) and
+[Imperial College London](https://www.imperial.ac.uk/). The API is documented
+at <https://www.imperial.ac.uk/londonair/api/>.
+
+## License
+
+[MIT](LICENSE).

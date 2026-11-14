@@ -1,0 +1,94 @@
+Metadata-Version: 2.4
+Name: aiounifi
+Version: 99
+Summary: Python library for communicating with UniFi Network Controller API
+Author-email: Robert Svensson <Kane610@users.noreply.github.com>
+License: MIT
+Project-URL: Source Code, https://github.com/Kane610/aiounifi
+Project-URL: Bug Reports, https://github.com/Kane610/aiounifi/issues
+Project-URL: Forum, https://community.home-assistant.io/t/unifi-network-integration-official-thread/
+Keywords: unifi,homeassistant
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Home Automation
+Requires-Python: >=3.13.0
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiohttp>3.9
+Requires-Dist: orjson>3.9
+Requires-Dist: pyotp>=2.9
+Requires-Dist: segno>=1.5.2
+Provides-Extra: requirements
+Requires-Dist: aiohttp==3.14.5; extra == "requirements"
+Requires-Dist: orjson==3.13.0; extra == "requirements"
+Requires-Dist: pyotp==2.10.0; extra == "requirements"
+Requires-Dist: segno==1.6.6; extra == "requirements"
+Provides-Extra: requirements-test
+Requires-Dist: aioresponses==0.7.9; extra == "requirements-test"
+Requires-Dist: mypy==2.4.1; extra == "requirements-test"
+Requires-Dist: pytest==9.2.0; extra == "requirements-test"
+Requires-Dist: pytest-aiohttp==1.1.1; extra == "requirements-test"
+Requires-Dist: pytest-asyncio==1.4.1.post1; extra == "requirements-test"
+Requires-Dist: pytest-cov==7.1.0; extra == "requirements-test"
+Requires-Dist: ruff==0.17.4; extra == "requirements-test"
+Requires-Dist: trustme==1.2.1; extra == "requirements-test"
+Requires-Dist: types-orjson==3.6.2; extra == "requirements-test"
+Provides-Extra: requirements-dev
+Requires-Dist: pre-commit==4.7.0; extra == "requirements-dev"
+Dynamic: license-file
+
+# aiounifi
+Asynchronous library to communicate with Unifi Controller
+
+## Network API v1, with an API key
+
+`Controller.network` is a client of the official UniFi Network Integration
+API, the versioned API under `/proxy/network/integration/v1` on the console.
+It authenticates with an API key made in the console under
+*Network → Integrations*, and needs no user, password or login. On consoles
+joined to a UniFi fabric that is the only option, as those cannot hold local
+users. The legacy interfaces (`controller.clients`, `controller.devices`, ...)
+are unchanged and still need a local user.
+
+```python
+config = Configuration(session, "10.0.0.1", port=443, api_key="...")
+network = Controller(config).network
+
+info = await network.get_info()  # {"applicationVersion": "10.6.106"}
+await network.assign_site("default")  # short name, display name or UUID
+
+await network.devices.update()  # every page, cached by MAC address
+switch = network.devices["70:a7:41:65:c0:ce"]
+switch = await network.devices.get_details(switch.device_id)  # adds ports and radios
+stats = await network.devices.get_statistics(switch.device_id)
+await network.devices.power_cycle_port(switch.device_id, port_idx=3)
+await network.devices.restart(switch.device_id)
+
+await network.clients.update()
+client = await network.clients.get_by_mac("aa:bb:cc:dd:ee:ff")
+await network.clients.authorize_guest_access(client.client_id, time_limit_minutes=60)
+await network.clients.unauthorize_guest_access(client.client_id)
+```
+
+The v1 API has no websocket. `update()` fetches every page of a list and then
+removes cached items the console no longer returns, signalling `DELETED`.
+Clients are the exception: the console lists connected clients only, so one
+that leaves stays cached, as in the legacy API, and signals `CHANGED`.
+`network.clients.is_connected(mac)` and `network.clients.last_seen(mac)` tell
+whether and when it was last listed.
+Errors are `NetworkApiError` subclasses that also inherit the legacy types
+(`Unauthorized`, `Forbidden`, ...) and carry the API's structured error fields.
+A `502` from a console that cannot keep up is retried twice with a short
+backoff before `BadGateway` is raised.
+
+Try it from the command line:
+
+```sh
+aiounifi 10.0.0.1 -p 443 -k <api-key>
+```
+
+## Acknowledgements
+* Paulus Schoutsen (balloob) creator of aiohue which most of this code repository is modeled after.
