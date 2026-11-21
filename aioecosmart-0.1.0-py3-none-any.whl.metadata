@@ -1,0 +1,131 @@
+Metadata-Version: 2.5
+Name: aioecosmart
+Version: 0.1.0
+Summary: Async client for the Ecosmart price API (New Zealand wholesale electricity spot prices and forecasts).
+Project-URL: Homepage, https://github.com/ecosmart-nz/aioecosmart
+Project-URL: Issues, https://github.com/ecosmart-nz/aioecosmart/issues
+Project-URL: Changelog, https://github.com/ecosmart-nz/aioecosmart/blob/main/CHANGELOG.md
+Author-email: Ecosmart New Zealand Limited <info@ecosmart.co.nz>
+License-Expression: MIT
+License-File: LICENSE
+Keywords: ecosmart,electricity,home assistant,new zealand,spot price
+Classifier: Development Status :: 4 - Beta
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Topic :: Home Automation
+Classifier: Typing :: Typed
+Requires-Python: >=3.13
+Requires-Dist: aiohttp>=3.11
+Requires-Dist: mashumaro>=3.13
+Description-Content-Type: text/markdown
+
+# aioecosmart
+
+Async Python client for the **Ecosmart price API** — live New Zealand wholesale
+electricity spot prices, forecasts and settled prices for the connection points an
+API key carries.
+
+[Ecosmart](https://www.ecosmart.co.nz/) is a New Zealand electricity retailer that
+passes wholesale spot prices through to customers. Account holders mint their own API
+key in the Ecosmart app under **More → Settings → Advanced → API keys**.
+
+This library backs the Home Assistant `ecosmart` integration. Nothing in it depends on
+Home Assistant, so it is equally usable from a script, a battery controller, or a
+dashboard.
+
+## Install
+
+```bash
+pip install aioecosmart
+```
+
+Requires Python 3.13 or newer.
+
+## Usage
+
+```python
+import asyncio
+from aioecosmart import EcosmartClient
+
+
+async def main() -> None:
+    async with EcosmartClient("ecos_live_your_key_here") as client:
+        me = await client.me()
+        poc = me.allowed_icps[0].poc  # the grid exit point for your ICP
+        now = await client.spot(poc)
+        if not now.is_stale and now.price_cents_per_kwh_incl_gst is not None:
+            print(f"{now.price_cents_per_kwh_incl_gst:.2f} c/kWh incl GST")
+        ahead = await client.forecast(poc, hours=48)
+        print(f"{ahead.count} half-hours, covering {ahead.covered_hours} h")
+
+
+asyncio.run(main())
+```
+
+Pass your own `aiohttp.ClientSession` as the second argument and the client will use
+it without ever closing it; omit it and the client makes and closes its own.
+
+## What it covers
+
+All seven published endpoints:
+
+| Method | Endpoint | Returns |
+|---|---|---|
+| `me()` | `GET /me` | `Identity` — the key, its ICPs, its rate limit |
+| `spot(poc)` | `GET /gxps/{poc}/spot` | `Spot` — current 5-minute dispatch price |
+| `spot_history(poc, hours=24)` | `GET /gxps/{poc}/spot/history` | `SpotHistory` |
+| `forecast(poc, hours=48)` | `GET /gxps/{poc}/forecast` | `Forecast` — forward WITS prices |
+| `final_prices(poc, from_date, to_date)` | `GET /gxps/{poc}/final-prices` | `FinalPrices` — settled half-hours |
+| `icp(icp)` | `GET /icps/{icp}` | `Icp` |
+| `windows(icp, n=6)` | `GET /windows` | `Windows` — tomorrow's cheapest and dearest half-hours |
+
+## Things worth knowing before you build on it
+
+- **Prices are wholesale energy at the grid exit point, not a retail rate.** Lines
+  charges, metering, levies and retailer margin are not included.
+- **GST.** Everything the market publishes is GST-exclusive. Use
+  `price_cents_per_kwh_incl_gst` to compare with a power bill.
+- **Negative prices are real**, especially overnight in the South Island. They pass
+  through untouched.
+- **Stale is not an error.** A `Spot` with `is_stale` true, or with null prices, is a
+  valid `200`. Treat it as unavailable rather than as a failure — a price more than
+  about 15 minutes old must never drive a battery.
+- **Empty is not an error either.** A `Forecast` with no points, or `Windows` with
+  empty `cheap`/`dear`, is a valid `200` with `unavailable_reason` set.
+- **Read `covered_hours`, not `horizon_hours`.** The latter is only your request
+  echoed back after clamping; the former is how far the published schedules reach.
+- **Use `trading_date` and `trading_period` verbatim.** Two days a year have 46 or 50
+  trading periods instead of 48; never recompute half-hours locally.
+- **Timestamps are UTC** (`Z`) and arrive as timezone-aware `datetime` objects.
+- **The library never retries and never throttles.** The API allows a documented
+  minimum of 12 requests per minute per key, with `X-RateLimit-*` on every response
+  and `Retry-After` on a `429`; scheduling and backoff belong to the caller. The most
+  recent budget is on the `rate_limit` property.
+- **Minting a new key revokes the previous one.** A rotated key shows up as
+  `EcosmartAuthError`, indistinguishable from an unknown or revoked one.
+
+## Errors
+
+Everything inherits `EcosmartError`.
+
+| Exception | Cause |
+|---|---|
+| `EcosmartConnectionError` | Network failure, timeout, or a non-JSON body |
+| `EcosmartAuthError` | `401` — key missing, unknown, or revoked |
+| `EcosmartIcpNotInScopeError` | `403` — this key does not carry that ICP |
+| `EcosmartUnknownPocError` | `404` — no such grid exit point |
+| `EcosmartInvalidRangeError` | `400` — range backwards or longer than 62 days |
+| `EcosmartRateLimitError` | `429` — budget spent; `.retry_after` holds the seconds |
+
+## Documentation
+
+- Human documentation: <https://www.ecosmart.co.nz/electricity/api/>
+- Machine contract: <https://www.ecosmart.co.nz/electricity/openapi.yaml>
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
