@@ -1,0 +1,99 @@
+Metadata-Version: 2.4
+Name: arcam-fmj
+Version: 3.0.0
+Summary: A python library for speaking to Arcam receivers
+Author: Joakim Plate
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/elupus/arcam_fmj
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Environment :: Plugins
+Classifier: Framework :: AsyncIO
+Requires-Python: >=3.11
+Description-Content-Type: text/x-rst
+License-File: LICENSE.txt
+Requires-Dist: aiohttp>=3.13.2
+Requires-Dist: attrs>18.1
+Requires-Dist: defusedxml>=0.7.1
+Requires-Dist: serialx>=1.7.0
+Provides-Extra: tests
+Requires-Dist: coveralls; extra == "tests"
+Requires-Dist: pytest-aiohttp>=1.0.0; extra == "tests"
+Requires-Dist: pytest-asyncio>=1.0.0; extra == "tests"
+Requires-Dist: pytest-cov>=3.0.0; extra == "tests"
+Requires-Dist: pytest-mock; extra == "tests"
+Requires-Dist: pytest>3.6.4; extra == "tests"
+Dynamic: license-file
+
+********************************
+Arcam IP Control
+********************************
+This module supports controlling an Arcam FMJ receiver (as well as JBL and AudioControl processors) over the network.
+It's built mainly for use with the Home Assistant project, but should work for other projects as well.
+
+Status
+______
+.. image:: https://github.com/elupus/arcam_fmj/actions/workflows/python-package.yml/badge.svg
+    :target: https://github.com/elupus/arcam_fmj/actions
+
+Module
+======
+
+Code to set volume and source using library.
+
+.. code-block:: python
+
+
+    async def run():
+
+        host = '192.168.0.2'
+        port = '50000'
+        zone = 1
+
+        volume = 50
+        source = SourceCodes.PVR
+
+        client = Client(host, port)
+        async with ClientContext(client):
+            state = State(client, zone)
+
+            await state.set_volume(volume)
+            await state.set_source(source)
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete (run())
+
+
+Console
+=======
+
+The module contains a commandline utility to test and request data from
+called ``arcam-fmj``.
+
+Code to set volume and source using console over network.
+
+.. code-block:: bash
+
+
+    arcam-fmj state --host 192.168.0.2 --port 50000 --source 5 --volume 50
+
+
+Code to set volume and source using console over serial.
+
+.. code-block:: bash
+
+
+    arcam-fmj state --serial /dev/ttyUSB0 --port 50000 --source 5 --volume 50
+
+
+Protocol Specifications
+=======================
+
+- `AVR5/AVR10/AVR20/AVR30/AV40/AVR11/AVR21/AVR31/AV41 <https://www.arcam.co.uk/ugc/tor/AVR11/Custom%20Installation%20Notes/RS232_5_10_20_30_40_11_21_31_41__SH289E_F_07Oct21.pdf>`_
+- `SA30 <https://www.arcam.co.uk/ugc/tor/SA30/Custom%20Installation%20Notes/SH306E_RS232_SA30_4.pdf>`_
+- `SA750 <https://www.jbl.com/on/demandware.static/-/Sites-masterCatalog_Harman/default/dwabc088c9/pdfs/SH320E_RS232_SA750_iss1.pdf>`_
+- `PA720/PA240/PA410 <https://www.arcam.co.uk/ugc/tor/PA240/Custom%20Installation%20Notes/RS232_PA720_PA240_PA410_SH305E_3.pdf>`_
+- `ST60 <https://www.arcam.co.uk/ugc/tor/ST60/Custom%20Installation%20Notes/SH309_RS232_ST60_C.pdf>`_
+- `AV860/AVR850/AVR550/AVR390/SR250 <https://www.arcam.co.uk/ugc/tor/avr390/RS232/RS232_860_850_550_390_250_SH274E_D_181018.pdf>`_
+- `SA10/SA20 <https://www.arcam.co.uk/ugc/tor/SA20/Custom%20Installation%20Notes/SH277E_RS232_SA10_SA20_B.pdf>`_
+- `AVR750/AVR450/AVR380 <https://www.arcam.co.uk/ugc/tor/avr380/RS232/RS232_AVR750450380_SH256E_3.pdf>`_

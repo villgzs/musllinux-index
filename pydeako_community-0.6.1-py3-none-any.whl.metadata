@@ -1,0 +1,112 @@
+Metadata-Version: 2.4
+Name: pydeako-community
+Version: 0.6.1
+Summary: Connect and interact with deako devices over the network locally
+Author: pydeako-community contributors
+Author-email: Deako <software@deako.com>
+Maintainer: iulianmac
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/pydeako-community/pydeako
+Project-URL: Source, https://github.com/pydeako-community/pydeako
+Project-URL: Bug Tracker, https://github.com/pydeako-community/pydeako/issues
+Project-URL: Changelog, https://github.com/pydeako-community/pydeako/releases
+Classifier: Development Status :: 3 - Alpha
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Home Automation
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Typing :: Typed
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE.txt
+Requires-Dist: zeroconf
+Dynamic: license-file
+
+# pydeako
+
+## Description
+
+`pydeako` is a Python library for discovering, connecting to, and interacting with Deako smart devices on the local network.
+
+This is the community-maintained continuation of [DeakoLights/pydeako](https://github.com/DeakoLights/pydeako), published on PyPI as `pydeako-community`. The import name is still `pydeako`.
+
+## Installation
+
+`pip install pydeako-community`
+
+## Usage
+
+### `pydeako` mdns discovery client
+
+```
+import asyncio
+from pydeako import discover
+
+async def _discover():
+    d = discover.DeakoDiscoverer()
+    try:
+        address = await d.get_address()
+        print(f"Found deako device at {address}!")
+    except discover.DevicesNotFoundException:
+        print("No devices found!")
+        pass
+
+if __name__ == "__main__":
+    asyncio.run(_discover())
+```
+
+### `pydeako` socket client
+
+```
+import asyncio
+from pydeako import deako, discover
+
+async def _discover():
+    client_name = "MyClient"
+    d = discover.DeakoDiscoverer()
+    deako_client = deako.Deako(d.get_address, client_name=client_name)
+
+    await deako_client.connect()
+    await deako_client.find_devices()
+
+    devices = deako_client.get_devices()
+
+    # turn on all devices
+    for uuid in devices:
+        await deako_client.control_device(uuid, True)
+
+if __name__ == "__main__":
+    asyncio.run(_discover())
+```
+
+## Contributing
+
+### Dev environment setup
+
+1. Use Python 3.11–3.14
+2. `python -m venv venv`
+3. `source venv/bin/activate`
+4. `pip install -r requirements.txt`
+5. `pip install -r requirements_test.txt`
+
+### Checks
+
+1. `pylint pydeako`
+2. `pycodestyle pydeako`
+3. `pytest pydeako`
+
+## License
+
+MIT License, see LICENSE.txt
+
+## Project status
+
+Deako published and maintained `pydeako` until release 0.6.0 (December 2024). The repository has had no activity since then. Its only contributor [no longer maintains anything related to Deako](https://github.com/DeakoLights/pydeako/pull/5#issuecomment-6393009318) and [suggested continuing it as a fork](https://github.com/DeakoLights/pydeako/pull/5#issuecomment-6402937827). Deako didn't answer a request to software@deako.com about maintainership.
+
+This fork keeps the full history of the original project. Release 0.6.1 contains the same library code as `pydeako` 0.6.0, repackaged and published from GitHub Actions. Fixes land in later releases.
+
+Bugs in the Home Assistant Deako integration go to [Home Assistant Core](https://github.com/home-assistant/core/issues); bugs in this library go [here](https://github.com/pydeako-community/pydeako/issues).
